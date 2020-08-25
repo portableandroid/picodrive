@@ -74,6 +74,10 @@ int _newlib_vm_size_user = 1 << TARGET_SIZE_2;
 #include "../common/version.h"
 #include <libretro.h>
 
+#ifdef PORTANDROID
+#include "emu_retro.h"
+#endif
+
 static retro_log_printf_t log_cb;
 static retro_video_refresh_t video_cb;
 static retro_input_poll_t input_poll_cb;
@@ -1422,7 +1426,11 @@ static void update_variables(void)
    var.key = "picodrive_audio_filter";
    PicoIn.sndFilter = 0;
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
-      if (strcmp(var.value, "low-pass") == 0)
+      #ifdef PORTANDROID
+         if (strcmp(var.value, "enabled") == 0)
+      #else
+         if (strcmp(var.value, "low-pass") == 0)
+      #endif
          PicoIn.sndFilter = 1;
    }
 
@@ -1475,6 +1483,11 @@ void retro_run(void)
             PicoIn.pad[pad] |= retro_pico_map[i];
 
    PicoPatchApply();
+
+#ifdef PORTANDROID
+   PicoIn.skipFrame = cb_context.video_skip ? 1 : 0;
+#endif
+
    PicoFrame();
 
 #if defined(RENDER_GSKIT_PS2)
