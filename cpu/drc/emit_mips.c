@@ -11,6 +11,7 @@
 // saved: r16-r23,r30, reserved: r0(zero), r26-r27(irq), r28(gp), r29(sp)
 // r1,r15,r24,r25(at,t7-t9) are used internally by the code emitter
 // MIPSN32/MIPS64 ABI: params: r4-r11, no caller-reserved save area on stack
+// for PIC code, on function calls r25(t9) must contain the called address
 #define RET_REG		2 // v0
 #define PARAM_REGS	{ 4, 5, 6, 7 } // a0-a3
 #define	PRESERVED_REGS	{ 16, 17, 18, 19, 20, 21, 22, 23 } // s0-s7
@@ -26,6 +27,7 @@
 
 // registers usable for user code: r1-r25, others reserved or special
 #define Z0		0  // zero register
+#define	CR		25 // call register
 #define	GP		28 // global pointer
 #define	SP		29 // stack pointer
 #define	FP		30 // frame pointer
@@ -382,7 +384,7 @@ static int emith_rd(u32 op)
 			ret =	emith_has_(rd,2,op, 0,0x3f) ? (op>>16)&0x1f :-1;
 		  if ((op>>26) == OP__RT)
 		  	ret =	-1;
-		  return (ret ?: -1);	// Z0 doesn't have dependencies
+		  return (ret ? ret : -1);	// Z0 doesn't have dependencies
 		}
 
 static int emith_b_isswap(u32 bop, u32 lop)
@@ -1510,8 +1512,8 @@ static int emith_cond_check(int cond, int *r)
 	emith_jump_reg(r)
 
 #define emith_jump_ctx(offs) do { \
-	emith_ctx_read_ptr(AT, offs); \
-	emith_jump_reg(AT); \
+	emith_ctx_read_ptr(CR, offs); \
+	emith_jump_reg(CR); \
 } while (0)
 #define emith_jump_ctx_c(cond, offs) \
 	emith_jump_ctx(offs)
@@ -1523,10 +1525,26 @@ static int emith_cond_check(int cond, int *r)
 
 #define emith_call_reg(r) \
 	emith_branch(MIPS_JALR(LR, r))
-
 #define emith_call_ctx(offs) do { \
-	emith_ctx_read_ptr(AT, offs); \
-	emith_call_reg(AT); \
+	emith_ctx_read_ptr(CR, offs); \
+	emith_call_reg(CR); \
+} while (0)
+
+#define emith_abijump_reg(r) do { \
+	if ((r) != CR) emith_move_r_r(CR, r); \
+	emith_branch(MIPS_JR(CR)); \
+} while (0)
+#define emith_abijump_reg_c(cond, r) \
+	emith_abijump_reg(r)
+#define emith_abicall(target) do { \
+	emith_move_r_ptr_imm(CR, target); \
+	emith_branch(MIPS_JALR(LR, CR)); \
+} while (0)
+#define emith_abicall_cond(cond, target) \
+	emith_abicall(target)
+#define emith_abicall_reg(r) do { \
+	if ((r) != CR) emith_move_r_r(CR, r); \
+	emith_branch(MIPS_JALR(LR, CR)); \
 } while (0)
 
 #define emith_call_cleanup()	/**/
@@ -1562,11 +1580,34 @@ static int emith_cond_check(int cond, int *r)
 // emitter ABI stuff
 #define emith_pool_check()	/**/
 #define emith_pool_commit(j)	/**/
-// NB: mips32r2 has SYNCI
-#define host_instructions_updated(base, end) __builtin___clear_cache(base, end)
 #define	emith_update_cache()	/**/
 #define emith_rw_offs_max()	0x7fff
 #define emith_uext_ptr(r)	/**/
+
+#if __mips_isa_rev >= 2 && defined(MIPS_USE_SYNCI) && defined(__GNUC__)
+// this should normally be in libc clear_cache; however, it sometimes isn't.
+// core function taken from SYNCI description, MIPS32 instruction set manual
+static NOINLINE void host_instructions_updated(void *base, void *end, int force)
+{
+	int step, tmp;
+	asm volatile(
+	"	rdhwr	%2, $1;"
+	"	bal	0f;"			// needed to allow for jr.hb:
+	"0:	addiu	$ra, $ra, 3f-0b;"	//   set ra to insn after jr.hb
+	"	beqz	%2, 3f;"
+
+	"1:	synci	0(%0);"
+	"	sltu	%3, %0, %1;"
+	"	addu	%0, %0, %2;"
+	"	bnez	%3, 1b;"
+
+	"	sync;"
+	"2:	jr.hb	$ra;"
+	"3:	" : "+r"(base), "+r"(end), "=r"(step), "=r"(tmp) :: "$31");
+}
+#else
+#define host_instructions_updated(base, end, force) __builtin___clear_cache(base, end)
+#endif
 
 // SH2 drc specific
 #define emith_sh2_drc_entry() do { \
@@ -1604,7 +1645,7 @@ static int emith_cond_check(int cond, int *r)
 	emith_lsl(func, func, PTR_SCALE); \
 	emith_read_r_r_r_ptr(func, tab, func); \
 	emith_move_r_r_ptr(6, CONTEXT_REG); /* arg2 */ \
-	emith_jump_reg(func); \
+	emith_abijump_reg(func); \
 } while (0)
 
 #define emith_sh2_delay_loop(cycles, reg) do {			\

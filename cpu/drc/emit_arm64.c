@@ -7,14 +7,14 @@
  */
 #define HOST_REGS	32
 
-// AAPCS64: params: r0-r7, return: r0-r1, temp: r8-r17, saved: r19-r29
-// reserved: r18 (for platform use)
+// AAPCS64: params: r0-r7, return: r0-r1, temp: r8-r17, saved: r19-r28
+// reserved: r18 (for platform use), r29 (frame pointer)
 #define RET_REG		0
 #define PARAM_REGS	{ 0, 1, 2, 3, 4, 5, 6, 7 }
-#define PRESERVED_REGS	{ 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29 }
+#define PRESERVED_REGS	{ 19, 20, 21, 22, 23, 24, 25, 26, 27, 28 }
 #define TEMPORARY_REGS	{ 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 }
 
-#define CONTEXT_REG	29
+#define CONTEXT_REG	19
 #define STATIC_SH2_REGS	{ SHR_SR,28 , SHR_R(0),27 , SHR_R(1),26 }
 
 // R31 doesn't exist, it aliases either with zero or SP
@@ -1142,6 +1142,17 @@ static void emith_ldst_offs(int sz, int rd, int rn, int o9, int ld, int mode)
 	rcache_free_tmp(_t); \
 } while (0)
 
+#define emith_abijump_reg(r) \
+	emith_jump_reg(r)
+#define emith_abijump_reg_c(cond, r) \
+	emith_abijump_reg(r)
+#define emith_abicall(target) \
+	emith_call(target)
+#define emith_abicall_cond(cond, target) \
+	emith_abicall(target)
+#define emith_abicall_reg(r) \
+	emith_call_reg(r)
+
 #define emith_call_cleanup()	/**/
 
 #define emith_ret() \
@@ -1173,9 +1184,10 @@ static void emith_ldst_offs(int sz, int rd, int rn, int o9, int ld, int mode)
 #define emith_pool_commit(j)	/**/
 #define emith_insn_ptr()	((u8 *)tcache_ptr)
 #define	emith_flush()		/**/
-#define host_instructions_updated(base, end) __builtin___clear_cache(base, end)
+#define host_instructions_updated(base, end, force) \
+	do { if (force) __builtin___clear_cache(base, end); } while (0)
 #define	emith_update_cache()	/**/
-#define emith_rw_offs_max()	0xff
+#define emith_rw_offs_max()	0x1ff
 #define emith_uext_ptr(r)	/**/
 
 

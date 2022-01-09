@@ -9,88 +9,32 @@
 #include <stdio.h>
 
 #include "../libpicofe/input.h"
+#include "../libpicofe/plat.h"
 #include "../libpicofe/plat_sdl.h"
 #include "../libpicofe/in_sdl.h"
 #include "../libpicofe/gl.h"
 #include "emu.h"
 #include "menu_pico.h"
 #include "input_pico.h"
+#include "plat_sdl.h"
 #include "version.h"
 
-#include <pico/pico.h>
+#include <pico/pico_int.h>
 
 static void *shadow_fb;
+static struct area { int w, h; } area;
 
-const struct in_default_bind in_sdl_defbinds[] __attribute__((weak)) = {
-	{ SDLK_UP,     IN_BINDTYPE_PLAYER12, GBTN_UP },
-	{ SDLK_DOWN,   IN_BINDTYPE_PLAYER12, GBTN_DOWN },
-	{ SDLK_LEFT,   IN_BINDTYPE_PLAYER12, GBTN_LEFT },
-	{ SDLK_RIGHT,  IN_BINDTYPE_PLAYER12, GBTN_RIGHT },
-	{ SDLK_z,      IN_BINDTYPE_PLAYER12, GBTN_A },
-	{ SDLK_x,      IN_BINDTYPE_PLAYER12, GBTN_B },
-	{ SDLK_c,      IN_BINDTYPE_PLAYER12, GBTN_C },
-	{ SDLK_a,      IN_BINDTYPE_PLAYER12, GBTN_X },
-	{ SDLK_s,      IN_BINDTYPE_PLAYER12, GBTN_Y },
-	{ SDLK_d,      IN_BINDTYPE_PLAYER12, GBTN_Z },
-	{ SDLK_RETURN, IN_BINDTYPE_PLAYER12, GBTN_START },
-	{ SDLK_f,      IN_BINDTYPE_PLAYER12, GBTN_MODE },
-	{ SDLK_ESCAPE, IN_BINDTYPE_EMU, PEVB_MENU },
-	{ SDLK_TAB,    IN_BINDTYPE_EMU, PEVB_RESET },
-	{ SDLK_F1,     IN_BINDTYPE_EMU, PEVB_STATE_SAVE },
-	{ SDLK_F2,     IN_BINDTYPE_EMU, PEVB_STATE_LOAD },
-	{ SDLK_F3,     IN_BINDTYPE_EMU, PEVB_SSLOT_PREV },
-	{ SDLK_F4,     IN_BINDTYPE_EMU, PEVB_SSLOT_NEXT },
-	{ SDLK_F5,     IN_BINDTYPE_EMU, PEVB_SWITCH_RND },
-	{ SDLK_F6,     IN_BINDTYPE_EMU, PEVB_PICO_PPREV },
-	{ SDLK_F7,     IN_BINDTYPE_EMU, PEVB_PICO_PNEXT },
-	{ SDLK_F8,     IN_BINDTYPE_EMU, PEVB_PICO_SWINP },
-	{ SDLK_BACKSPACE, IN_BINDTYPE_EMU, PEVB_FF },
-	{ 0, 0, 0 }
-};
-
-const struct menu_keymap in_sdl_key_map[] __attribute__((weak)) =
-{
-	{ SDLK_UP,	PBTN_UP },
-	{ SDLK_DOWN,	PBTN_DOWN },
-	{ SDLK_LEFT,	PBTN_LEFT },
-	{ SDLK_RIGHT,	PBTN_RIGHT },
-	{ SDLK_RETURN,	PBTN_MOK },
-	{ SDLK_ESCAPE,	PBTN_MBACK },
-	{ SDLK_SEMICOLON,	PBTN_MA2 },
-	{ SDLK_QUOTE,	PBTN_MA3 },
-	{ SDLK_LEFTBRACKET,  PBTN_L },
-	{ SDLK_RIGHTBRACKET, PBTN_R },
-};
-
-const struct menu_keymap in_sdl_joy_map[] __attribute__((weak)) =
-{
-	{ SDLK_UP,	PBTN_UP },
-	{ SDLK_DOWN,	PBTN_DOWN },
-	{ SDLK_LEFT,	PBTN_LEFT },
-	{ SDLK_RIGHT,	PBTN_RIGHT },
-	/* joystick */
-	{ SDLK_WORLD_0,	PBTN_MOK },
-	{ SDLK_WORLD_1,	PBTN_MBACK },
-	{ SDLK_WORLD_2,	PBTN_MA2 },
-	{ SDLK_WORLD_3,	PBTN_MA3 },
-};
-
-extern const char * const in_sdl_key_names[] __attribute__((weak));
-
-static const struct in_pdata in_sdl_platform_data = {
+static struct in_pdata in_sdl_platform_data = {
 	.defbinds = in_sdl_defbinds,
 	.key_map = in_sdl_key_map,
-	.kmap_size = sizeof(in_sdl_key_map) / sizeof(in_sdl_key_map[0]),
 	.joy_map = in_sdl_joy_map,
-	.jmap_size = sizeof(in_sdl_joy_map) / sizeof(in_sdl_joy_map[0]),
-	.key_names = in_sdl_key_names,
 };
 
 /* YUV stuff */
 static int yuv_ry[32], yuv_gy[32], yuv_by[32];
 static unsigned char yuv_u[32 * 2], yuv_v[32 * 2];
 static unsigned char yuv_y[256];
-static struct uyvy {  unsigned int y:8; unsigned int vyu:24; } yuv_uyvy[65536];
+static struct uyvy { uint32_t y:8; uint32_t vyu:24; } yuv_uyvy[65536];
 
 void bgr_to_uyvy_init(void)
 {
@@ -130,32 +74,74 @@ void bgr_to_uyvy_init(void)
      int r = (i >> 11) & 0x1f, g = (i >> 6) & 0x1f, b = (i >> 0) & 0x1f;
      int y = (yuv_ry[r] + yuv_gy[g] + yuv_by[b]) >> 16;
      yuv_uyvy[i].y = yuv_y[y];
+#if CPU_IS_LE
      yuv_uyvy[i].vyu = (yuv_v[r-y + 32] << 16) | (yuv_y[y] << 8) | yuv_u[b-y + 32];
+#else
+     yuv_uyvy[i].vyu = (yuv_v[b-y + 32] << 16) | (yuv_y[y] << 8) | yuv_u[r-y + 32];
+#endif
   }
 }
 
-void rgb565_to_uyvy(void *d, const void *s, int pixels)
+void rgb565_to_uyvy(void *d, const void *s, int w, int h, int pitch, int x2)
 {
   uint32_t *dst = d;
   const uint16_t *src = s;
+  int i;
 
-  if (plat_sdl_overlay->w > 2*plat_sdl_overlay->h)
-  for (; pixels > 0; src += 4, dst += 4, pixels -= 4)
-  {
-    struct uyvy *uyvy0 = yuv_uyvy + src[0], *uyvy1 = yuv_uyvy + src[1];
-    struct uyvy *uyvy2 = yuv_uyvy + src[2], *uyvy3 = yuv_uyvy + src[3];
-    dst[0] = (uyvy0->y << 24) | uyvy0->vyu;
-    dst[1] = (uyvy1->y << 24) | uyvy1->vyu;
-    dst[2] = (uyvy2->y << 24) | uyvy2->vyu;
-    dst[3] = (uyvy3->y << 24) | uyvy3->vyu;
-  } else 
-  for (; pixels > 0; src += 4, dst += 2, pixels -= 4)
-  {
-    struct uyvy *uyvy0 = yuv_uyvy + src[0], *uyvy1 = yuv_uyvy + src[1];
-    struct uyvy *uyvy2 = yuv_uyvy + src[2], *uyvy3 = yuv_uyvy + src[3];
-    dst[0] = (uyvy1->y << 24) | uyvy0->vyu;
-    dst[1] = (uyvy3->y << 24) | uyvy2->vyu;
+  if (x2) while (h--) {
+    for (i = w; i > 0; src += 4, dst += 4, i -= 4)
+    {
+      struct uyvy *uyvy0 = yuv_uyvy + src[0], *uyvy1 = yuv_uyvy + src[1];
+      struct uyvy *uyvy2 = yuv_uyvy + src[2], *uyvy3 = yuv_uyvy + src[3];
+#if CPU_IS_LE
+      dst[0] = (uyvy0->y << 24) | uyvy0->vyu;
+      dst[1] = (uyvy1->y << 24) | uyvy1->vyu;
+      dst[2] = (uyvy2->y << 24) | uyvy2->vyu;
+      dst[3] = (uyvy3->y << 24) | uyvy3->vyu;
+#else
+      dst[0] = uyvy0->y | (uyvy0->vyu << 8);
+      dst[1] = uyvy1->y | (uyvy1->vyu << 8);
+      dst[2] = uyvy2->y | (uyvy2->vyu << 8);
+      dst[3] = uyvy3->y | (uyvy3->vyu << 8);
+#endif
+    }
+    src += pitch - w;
+  } else while (h--) {
+    for (i = w; i > 0; src += 4, dst += 2, i -= 4)
+    {
+      struct uyvy *uyvy0 = yuv_uyvy + src[0], *uyvy1 = yuv_uyvy + src[1];
+      struct uyvy *uyvy2 = yuv_uyvy + src[2], *uyvy3 = yuv_uyvy + src[3];
+#if CPU_IS_LE
+      dst[0] = (uyvy1->y << 24) | uyvy0->vyu;
+      dst[1] = (uyvy3->y << 24) | uyvy2->vyu;
+#else
+      dst[0] = uyvy1->y | (uyvy0->vyu << 8);
+      dst[1] = uyvy3->y | (uyvy2->vyu << 8);
+#endif
+    }
+    src += pitch - w;
   }
+}
+
+static int clear_buf_cnt, clear_stat_cnt;
+
+void plat_video_set_size(int w, int h)
+{
+	if (area.w != w || area.h != h) {
+		area = (struct area) { w, h };
+
+		if (plat_sdl_change_video_mode(w, h, 0) < 0) {
+			// failed, revert to original resolution
+			plat_sdl_change_video_mode(g_screen_width, g_screen_height, 0);
+			w = g_screen_width, h = g_screen_height;
+		}
+		if (!plat_sdl_overlay && !plat_sdl_gl_active) {
+			g_screen_width = w;
+			g_screen_height = h;
+			g_screen_ppitch = w;
+			g_screen_ptr = plat_sdl_screen->pixels;
+		}
+	}
 }
 
 void plat_video_flip(void)
@@ -163,10 +149,10 @@ void plat_video_flip(void)
 	if (plat_sdl_overlay != NULL) {
 		SDL_Rect dstrect =
 			{ 0, 0, plat_sdl_screen->w, plat_sdl_screen->h };
-
 		SDL_LockYUVOverlay(plat_sdl_overlay);
 		rgb565_to_uyvy(plat_sdl_overlay->pixels[0], shadow_fb,
-				g_screen_ppitch * g_screen_height);
+				area.w, area.h, g_screen_ppitch,
+				plat_sdl_overlay->w >= 2*area.w);
 		SDL_UnlockYUVOverlay(plat_sdl_overlay);
 		SDL_DisplayYUVOverlay(plat_sdl_overlay, &dstrect);
 	}
@@ -174,11 +160,24 @@ void plat_video_flip(void)
 		gl_flip(shadow_fb, g_screen_ppitch, g_screen_height);
 	}
 	else {
-		if (SDL_MUSTLOCK(plat_sdl_screen))
+		if (SDL_MUSTLOCK(plat_sdl_screen)) {
 			SDL_UnlockSurface(plat_sdl_screen);
-		SDL_Flip(plat_sdl_screen);
+			SDL_Flip(plat_sdl_screen);
+			SDL_LockSurface(plat_sdl_screen);
+		} else
+			SDL_Flip(plat_sdl_screen);
 		g_screen_ptr = plat_sdl_screen->pixels;
-		PicoDrawSetOutBuf(g_screen_ptr, g_screen_ppitch * 2);
+		plat_video_set_buffer(g_screen_ptr);
+		if (clear_buf_cnt) {
+			memset(g_screen_ptr, 0, plat_sdl_screen->w*plat_sdl_screen->h * 2);
+			clear_buf_cnt--;
+		}
+	}
+	if (clear_stat_cnt) {
+		unsigned short *d = (unsigned short *)g_screen_ptr + g_screen_ppitch * g_screen_height;
+		int l = g_screen_ppitch * 8;
+		memset((int *)(d - l), 0, l * 2);
+		clear_stat_cnt--;
 	}
 }
 
@@ -186,10 +185,28 @@ void plat_video_wait_vsync(void)
 {
 }
 
+void plat_video_clear_status(void)
+{
+	clear_stat_cnt = 3; // do it thrice in case of triple buffering
+}
+
+void plat_video_clear_buffers(void)
+{
+	if (plat_sdl_overlay != NULL || plat_sdl_gl_active)
+		memset(shadow_fb, 0, plat_sdl_screen->w*plat_sdl_screen->h * 2);
+	else {
+		memset(g_screen_ptr, 0, plat_sdl_screen->w*plat_sdl_screen->h * 2);
+		clear_buf_cnt = 3; // do it thrice in case of triple buffering
+	}
+}
+
 void plat_video_menu_enter(int is_rom_loaded)
 {
-	plat_sdl_change_video_mode(g_menuscreen_w, g_menuscreen_h, 0);
+	if (SDL_MUSTLOCK(plat_sdl_screen))
+		SDL_UnlockSurface(plat_sdl_screen);
+	plat_sdl_change_video_mode(g_menuscreen_w, g_menuscreen_h, 1);
 	g_screen_ptr = shadow_fb;
+	plat_video_set_buffer(g_screen_ptr);
 }
 
 void plat_video_menu_begin(void)
@@ -212,7 +229,7 @@ void plat_video_menu_end(void)
 
 		SDL_LockYUVOverlay(plat_sdl_overlay);
 		rgb565_to_uyvy(plat_sdl_overlay->pixels[0], shadow_fb,
-				g_menuscreen_pp * g_menuscreen_h);
+			g_menuscreen_w, g_menuscreen_h, g_menuscreen_pp, 0);
 		SDL_UnlockYUVOverlay(plat_sdl_overlay);
 
 		SDL_DisplayYUVOverlay(plat_sdl_overlay, &dstrect);
@@ -226,7 +243,6 @@ void plat_video_menu_end(void)
 		SDL_Flip(plat_sdl_screen);
 	}
 	g_menuscreen_ptr = NULL;
-
 }
 
 void plat_video_menu_leave(void)
@@ -235,17 +251,26 @@ void plat_video_menu_leave(void)
 
 void plat_video_loop_prepare(void)
 {
-	plat_sdl_change_video_mode(g_screen_width, g_screen_height, 0);
-
+	// take over any new vout settings
+	plat_sdl_change_video_mode(g_menuscreen_w, g_menuscreen_h, 0);
+	// switch over to scaled output if available, but keep the aspect ratio
 	if (plat_sdl_overlay != NULL || plat_sdl_gl_active) {
+		g_screen_width = (240 * g_menuscreen_w / g_menuscreen_h) & ~1;
+		g_screen_height = 240;
+		g_screen_ppitch = g_screen_width;
+		plat_sdl_change_video_mode(g_screen_width, g_screen_height, 0);
 		g_screen_ptr = shadow_fb;
 	}
 	else {
+		g_screen_width = g_menuscreen_w;
+		g_screen_height = g_menuscreen_h;
+		g_screen_ppitch = g_menuscreen_pp;
 		if (SDL_MUSTLOCK(plat_sdl_screen))
 			SDL_LockSurface(plat_sdl_screen);
 		g_screen_ptr = plat_sdl_screen->pixels;
 	}
-	PicoDrawSetOutBuf(g_screen_ptr, g_screen_ppitch * 2);
+	plat_video_set_buffer(g_screen_ptr);
+	plat_video_set_size(g_screen_width, g_screen_height);
 }
 
 void plat_early_init(void)
@@ -266,6 +291,11 @@ void plat_init(void)
 	ret = plat_sdl_init();
 	if (ret != 0)
 		exit(1);
+	SDL_ShowCursor(0);
+#if defined(__RG350__) || defined(__GCW0__) || defined(__OPENDINGUX__)
+	// opendingux on JZ47x0 may falsely report a HW overlay, fix to window
+	plat_target.vout_method = 0;
+#endif
 
 	plat_sdl_quit_cb = plat_sdl_quit;
 
@@ -292,6 +322,9 @@ void plat_init(void)
 	g_screen_ppitch = 320;
 	g_screen_ptr = shadow_fb;
 
+	in_sdl_platform_data.kmap_size = in_sdl_key_map_sz,
+	in_sdl_platform_data.jmap_size = in_sdl_joy_map_sz,
+	in_sdl_platform_data.key_names = *in_sdl_key_names,
 	in_sdl_init(&in_sdl_platform_data, plat_sdl_event_handler);
 	in_probe();
 

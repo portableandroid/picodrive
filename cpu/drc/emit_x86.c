@@ -618,7 +618,7 @@ enum { xAX = 0, xCX, xDX, xBX, xSP, xBP, xSI, xDI,	// x86-64,i386 common
 	t >>= count; \
 	if (d != s) \
 		emith_move_r_r(d, s); \
-	emith_and_r_imm(d, t); \
+	if (count) emith_and_r_imm(d, t); \
 } while (0)
 
 #define emith_clear_msb_c(cond, d, s, count) do { \
@@ -968,6 +968,17 @@ enum { xAX = 0, xCX, xDX, xBX, xSP, xBP, xSI, xDI,	// x86-64,i386 common
 	emith_ret(); \
 } while (0)
 
+#define emith_abijump_reg(r) \
+	emith_jump_reg(r)
+#define emith_abijump_reg_c(cond, r) \
+	emith_abijump_reg(r)
+#define emith_abicall(target) \
+	emith_call(target)
+#define emith_abicall_cond(cond, target) \
+	emith_abicall(target)
+#define emith_abicall_reg(r) \
+	emith_call_reg(r)
+
 
 #define EMITH_JMP_START(cond) { \
 	u8 *cond_ptr; \
@@ -1019,11 +1030,10 @@ enum { xAX = 0, xCX, xDX, xBX, xSP, xBP, xSI, xDI,	// x86-64,i386 common
 	emith_move_r_imm(rd, imm); \
 } while (0)
 
-#define host_instructions_updated(base, end)	(void)(base),(void)(end)
+#define host_instructions_updated(base, end, force)	(void)(base),(void)(end)
 #define	emith_update_cache()	/**/
 
-// NB this MUST be <0x40000000 to avoid overflow in address calculations
-#define emith_rw_offs_max()	0xfffffff // for better perfomance: <0x10000000
+#define emith_rw_offs_max()	0xffffffffU
 
 #ifdef __x86_64__
 

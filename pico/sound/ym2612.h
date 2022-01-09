@@ -6,15 +6,16 @@
 #define _H_FM_FM_
 
 /* compiler dependence */
+#include "../pico_types.h"
 #ifndef UINT8
-typedef unsigned char	UINT8;   /* unsigned  8bit */
-typedef unsigned short	UINT16;  /* unsigned 16bit */
-typedef unsigned int	UINT32;  /* unsigned 32bit */
+typedef u8		UINT8;   /* unsigned  8bit */
+typedef u16		UINT16;  /* unsigned 16bit */
+typedef u32		UINT32;  /* unsigned 32bit */
 #endif
 #ifndef INT8
-typedef signed char		INT8;    /* signed  8bit   */
-typedef signed short	INT16;   /* signed 16bit   */
-typedef signed int		INT32;   /* signed 32bit   */
+typedef s8		INT8;    /* signed  8bit   */
+typedef s16		INT16;   /* signed 16bit   */
+typedef s32		INT32;   /* signed 32bit   */
 #endif
 
 #if 1
@@ -58,7 +59,7 @@ typedef struct
 	UINT8	ssgn;
 	UINT16	ar_ksr;		/* 0x32 ar+ksr */
 	UINT16	vol_out;	/* 0x34 current output from EG (without LFO) */
-	UINT16	vol_ipol;	/* 0x36 interpolator memory */
+	UINT16	pad;
 } FM_SLOT;
 
 
@@ -78,7 +79,7 @@ typedef struct
 
 	UINT8	kcode;		/* +11 key code:                        */
 	UINT8   fn_h;		/* freq latch           */
-	UINT8	pad2;
+	UINT8	upd_cnt;	/* eg update counter */
 	UINT32	fc;		/* fnum,blk:adjusted to sample rate */
 	UINT32	block_fnum;	/* current blk/fnum value for this slot (can be different betweeen slots of one channel in 3slot mode) */
 
@@ -106,6 +107,9 @@ typedef struct
 	/* local time tables */
 	INT32	dt_tab[8][32];/* DeTune table       */
 } FM_ST;
+
+#define ST_SSG		1
+#define ST_DAC		2
 
 /***********************************************************/
 /* OPN unit                                                */
@@ -161,7 +165,7 @@ typedef struct
 extern YM2612 ym2612;
 #endif
 
-void YM2612Init_(int baseclock, int rate, int ssg);
+void YM2612Init_(int baseclock, int rate, int flags);
 void YM2612ResetChip_(void);
 int  YM2612UpdateOne_(int *buffer, int length, int stereo, int is_buf_empty);
 
@@ -182,10 +186,10 @@ int  YM2612PicoStateLoad2(int *tat, int *tbt);
 #define YM2612PicoStateLoad YM2612PicoStateLoad_
 #else
 /* GP2X specific */
-#include "../../platform/gp2x/940ctl.h"
-#define YM2612Init(baseclock,rate,ssg) do { \
-	if (PicoIn.opt&POPT_EXT_FM) YM2612Init_940(baseclock, rate, ssg); \
-	else               YM2612Init_(baseclock, rate, ssg); \
+#include <platform/gp2x/940ctl.h>
+#define YM2612Init(baseclock,rate,flags) do { \
+	if (PicoIn.opt&POPT_EXT_FM) YM2612Init_940(baseclock, rate, flags); \
+	else               YM2612Init_(baseclock, rate, flags); \
 } while (0)
 #define YM2612ResetChip() do { \
 	if (PicoIn.opt&POPT_EXT_FM) YM2612ResetChip_940(); \

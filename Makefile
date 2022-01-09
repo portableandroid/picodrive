@@ -1,6 +1,7 @@
 $(LD) ?= $(CC)
 TARGET ?= PicoDrive
-CFLAGS += -I.
+DEBUG ?= 0
+CFLAGS += -I$(PWD)
 CYCLONE_CC ?= gcc
 CYCLONE_CXX ?= g++
 
@@ -21,7 +22,7 @@ else # NO_CONFIG_MAK
 config.mak:
 endif
 
-# This is actually needed, believe me.
+# This is actually needed, believe me - one bit is used as a flag in some tables
 # If you really have to disable this, set NO_ALIGN_FUNCTIONS elsewhere.
 ifndef NO_ALIGN_FUNCTIONS
 CFLAGS += -falign-functions=2
@@ -33,14 +34,16 @@ gperf ?= 0
 
 ifneq ("$(PLATFORM)", "libretro")
 	CFLAGS += -Wall -g
-ifneq ($(findstring gcc,$(CC)),)
+ifneq ("$(PLATFORM)", "psp")
+ifneq ($(findstring gcc,$(shell $(CC) -v 2>&1)),)
 	CFLAGS += -ffunction-sections -fdata-sections
 	LDFLAGS += -Wl,--gc-sections
 endif
-	ifndef DEBUG
-	CFLAGS += -O3 -DNDEBUG
-	endif
+endif
 
+ifeq "$(DEBUG)" "0"
+	CFLAGS += -O3 -DNDEBUG
+endif
 	LD = $(CC)
 	OBJOUT ?= -o
 	LINKOUT ?= -o
@@ -52,9 +55,9 @@ CFLAGS += -finline-limit=42 -fno-unroll-loops -fno-ipa-cp -ffast-math
 # this gets you about 20% better execution speed on 32bit arm/mips
 CFLAGS += -fno-common -fno-stack-protector -fno-guess-branch-probability -fno-caller-saves -fno-tree-loop-if-convert -fno-regmove
 endif
-#OBJS += align.o
 
 # default settings
+use_libchdr ?= 1
 ifeq "$(ARCH)" "arm"
 use_cyclone ?= 1
 use_drz80 ?= 1
@@ -80,16 +83,36 @@ endif
 -include Makefile.local
 
 ifeq "$(PLATFORM)" "opendingux"
-opk: $(TARGET).opk
 
-$(TARGET).opk: $(TARGET)
-	$(RM) -rf .opk_data
-	cp -r platform/opendingux/data .opk_data
-	cp $< .opk_data/PicoDrive
-	$(STRIP) .opk_data/PicoDrive
-	mksquashfs .opk_data $@ -all-root -noappend -no-exports -no-xattrs
+# TODO this should somehow go to the platform/opendingux directory?
+.od_data: $(TARGET)
+	$(RM) -rf .od_data
+	cp -r platform/opendingux/data/. .od_data
+	cp platform/game_def.cfg .od_data
+	cp $< .od_data/PicoDrive
+	$(STRIP) .od_data/PicoDrive
+.PHONY: .od_data
+
+ifneq (,$(filter %__DINGUX__, $(CFLAGS)))
+# "legacy" dingux without opk support
+$(TARGET)-dge.zip: .od_data
+	rm -f .od_data/default.*.desktop
+	cd .od_data && zip -9 -r ../$@ *
+all: $(TARGET)-dge.zip
+CFLAGS += -DSDL_SURFACE_SW # some legacy dinguces had bugs in HWSURFACE
+else
+$(TARGET).opk: .od_data
+	rm -f .od_data/PicoDrive.dge
+	mksquashfs .od_data $@ -all-root -noappend -no-exports -no-xattrs
+all: $(TARGET).opk
+endif
+
+ifneq (,$(filter %mips32r2, $(CFLAGS)))
+CFLAGS += -DMIPS_USE_SYNCI # mips32r2 clear_cache uses SYNCI instead of a syscall
+endif
 
 OBJS += platform/opendingux/inputmap.o
+use_inputmap ?= 1
 
 # OpenDingux is a generic platform, really.
 PLATFORM := generic
@@ -102,22 +125,26 @@ LDFLAGS += -ldl -lbcm_host -L/opt/vc/lib
 ifneq (,$(wildcard /opt/vc/lib/libbrcmGLESv2.so))
 LDFLAGS += -lbrcmEGL -lbrcmGLESv2
 else
-LDFLAGS += -lEGL -lGLESv2
+LDFLAGS += -lEGL -lGLESv2 # on raspi GLESv1_CM is included in GLESv2
 endif
 OBJS += platform/linux/emu.o platform/linux/blit.o # FIXME
-OBJS += platform/common/plat_sdl.o
+OBJS += platform/common/plat_sdl.o platform/common/input_sdlkbd.o
 OBJS += platform/libpicofe/plat_sdl.o platform/libpicofe/in_sdl.o
-OBJS += platform/libpicofe/plat_dummy.o
+OBJS += platform/libpicofe/plat_dummy.o platform/libpicofe/linux/plat.o
 OBJS += platform/libpicofe/gl.o
 OBJS += platform/libpicofe/gl_platform.o
 USE_FRONTEND = 1
 endif
 ifeq "$(PLATFORM)" "generic"
-CFLAGS += -DSDL_OVERLAY_2X
+CFLAGS += -DSDL_OVERLAY_2X -DSDL_BUFFER_3X
 OBJS += platform/linux/emu.o platform/linux/blit.o # FIXME
-OBJS += platform/common/plat_sdl.o
+ifeq "$(use_inputmap)" "1"
+OBJS += platform/common/plat_sdl.o platform/opendingux/inputmap.o
+else
+OBJS += platform/common/plat_sdl.o platform/common/inputmap_kbd.o
+endif
 OBJS += platform/libpicofe/plat_sdl.o platform/libpicofe/in_sdl.o
-OBJS += platform/libpicofe/plat_dummy.o
+OBJS += platform/libpicofe/plat_dummy.o platform/libpicofe/linux/plat.o
 USE_FRONTEND = 1
 endif
 ifeq "$(PLATFORM)" "pandora"
@@ -126,13 +153,17 @@ platform/libpicofe/linux/plat.o: CFLAGS += -DPANDORA
 OBJS += platform/pandora/plat.o
 OBJS += platform/pandora/asm_utils.o
 OBJS += platform/common/arm_utils.o 
+OBJS += platform/libpicofe/linux/in_evdev.o
 OBJS += platform/libpicofe/linux/fbdev.o 
 OBJS += platform/libpicofe/linux/xenv.o
+OBJS += platform/libpicofe/linux/plat.o
 OBJS += platform/libpicofe/pandora/plat.o
 USE_FRONTEND = 1
 endif
 ifeq "$(PLATFORM)" "gp2x"
 OBJS += platform/common/arm_utils.o 
+OBJS += platform/libpicofe/linux/in_evdev.o
+OBJS += platform/libpicofe/linux/plat.o
 OBJS += platform/libpicofe/gp2x/in_gp2x.o
 OBJS += platform/libpicofe/gp2x/soc.o 
 OBJS += platform/libpicofe/gp2x/soc_mmsp2.o 
@@ -148,10 +179,25 @@ OBJS += platform/gp2x/warm.o
 USE_FRONTEND = 1
 PLATFORM_MP3 = 1
 PLATFORM_ZLIB = 1
-HAVE_ARMv6 = 0
+endif
+ifeq "$(PLATFORM)" "psp"
+CFLAGS += -DUSE_BGR565 -G8 # -DLPRINTF_STDIO -DFW15
+LDLIBS += -lpspgu -lpspge -lpsppower -lpspaudio -lpspdisplay -lpspaudiocodec
+LDLIBS += -lpsprtc -lpspctrl -lpspsdk -lc -lpspnet_inet -lpspuser -lpspkernel
+platform/common/main.o: CFLAGS += -Dmain=pico_main
+OBJS += platform/psp/plat.o
+OBJS += platform/psp/emu.o
+OBJS += platform/psp/in_psp.o
+OBJS += platform/psp/psp.o
+OBJS += platform/psp/asm_utils.o
+OBJS += platform/psp/mp3.o
+USE_FRONTEND = 1
 endif
 ifeq "$(PLATFORM)" "libretro"
 OBJS += platform/libretro/libretro.o
+ifneq ($(STATIC_LINKING), 1)
+OBJS += platform/libretro/libretro-common/compat/compat_strcasestr.o
+endif
 ifeq "$(USE_LIBRETRO_VFS)" "1"
 OBJS += platform/libretro/libretro-common/compat/compat_posix_string.o
 OBJS += platform/libretro/libretro-common/compat/compat_strl.o
@@ -161,19 +207,18 @@ OBJS += platform/libretro/libretro-common/streams/file_stream.o
 OBJS += platform/libretro/libretro-common/streams/file_stream_transforms.o
 OBJS += platform/libretro/libretro-common/vfs/vfs_implementation.o
 endif
-PLATFORM_ZLIB = 1
+PLATFORM_ZLIB ?= 1
 endif
 
 ifeq "$(USE_FRONTEND)" "1"
 
 # common
-OBJS += platform/common/main.o platform/common/emu.o \
+OBJS += platform/common/main.o platform/common/emu.o platform/common/upscale.o \
 	platform/common/menu_pico.o platform/common/config_file.o
 
 # libpicofe
 OBJS += platform/libpicofe/input.o platform/libpicofe/readpng.o \
-	platform/libpicofe/fonts.o platform/libpicofe/linux/in_evdev.o \
-	platform/libpicofe/linux/plat.o
+	platform/libpicofe/fonts.o
 
 # libpicofe - sound
 OBJS += platform/libpicofe/sndout.o
@@ -196,14 +241,38 @@ endif
 
 endif # USE_FRONTEND
 
+ifneq "$(PLATFORM)" "psp"
 OBJS += platform/common/mp3.o platform/common/mp3_sync.o
 ifeq "$(PLATFORM_MP3)" "1"
-platform/common/mp3_helix.o: CFLAGS += -Iplatform/libpicofe
 OBJS += platform/common/mp3_helix.o
 else ifeq "$(HAVE_LIBAVCODEC)" "1"
 OBJS += platform/common/mp3_libavcodec.o
 else
-OBJS += platform/common/mp3_dummy.o
+#OBJS += platform/common/mp3_minimp3.o
+OBJS += platform/common/mp3_drmp3.o
+endif
+endif
+
+ifeq (1,$(use_libchdr))
+CFLAGS += -DUSE_LIBCHDR
+
+# chdr
+CHDR = pico/cd/libchdr
+CHDR_OBJS += $(CHDR)/src/libchdr_chd.o $(CHDR)/src/libchdr_cdrom.o
+CHDR_OBJS += $(CHDR)/src/libchdr_flac.o
+CHDR_OBJS += $(CHDR)/src/libchdr_bitstream.o $(CHDR)/src/libchdr_huffman.o
+
+# lzma
+LZMA = $(CHDR)/deps/lzma-19.00
+LZMA_OBJS += $(LZMA)/src/CpuArch.o $(LZMA)/src/Alloc.o $(LZMA)/src/LzmaEnc.o
+LZMA_OBJS += $(LZMA)/src/Sort.o $(LZMA)/src/LzmaDec.o $(LZMA)/src/LzFind.o
+LZMA_OBJS += $(LZMA)/src/Delta.o
+$(LZMA_OBJS): CFLAGS += -D_7ZIP_ST
+
+OBJS += $(CHDR_OBJS) $(LZMA_OBJS)
+# ouf... prepend includes to overload headers available in the toolchain
+CHDR_I = $(shell find $(CHDR) -name 'include')
+CFLAGS := $(patsubst %, -I%, $(CHDR_I)) $(CFLAGS)
 endif
 
 ifeq "$(PLATFORM_ZLIB)" "1"
@@ -221,9 +290,17 @@ include platform/common/common.mak
 OBJS += $(OBJS_COMMON)
 CFLAGS += $(addprefix -D,$(DEFINES))
 
+ifneq (,$(findstring sdl,$(OBJS)))
+CFLAGS += -DUSE_SDL
+endif
+
 ifneq ($(findstring gcc,$(CC)),)
 ifneq ($(findstring SunOS,$(shell uname -a)),SunOS)
+ifeq ($(findstring Darwin,$(shell uname -a)),Darwin)
+LDFLAGS += -Wl,-map,$(TARGET).map
+else
 LDFLAGS += -Wl,-Map=$(TARGET).map
+endif
 endif
 endif
 
@@ -231,14 +308,25 @@ target_: $(TARGET)
 
 clean:
 	$(RM) $(TARGET) $(OBJS) pico/pico_int_offs.h
-	$(RM) -r .opk_data
+	$(RM) -r .od_data
 
 $(TARGET): $(OBJS)
-	
-ifeq ($(STATIC_LINKING), 1)
-	$(AR) rcs $@ $(OBJS)
+
+ifeq ($(STATIC_LINKING_LINK), 1)
+	$(AR) rcs $@ $^
 else
 	$(LD) $(LINKOUT)$@ $^ $(LDFLAGS) $(LDLIBS)
+endif
+
+ifeq "$(PLATFORM)" "psp"
+PSPSDK ?= $(shell psp-config --pspsdk-path)
+TARGET = PicoDrive
+PSP_EBOOT_TITLE = PicoDrive
+PSP_EBOOT_ICON = platform/psp/data/icon.png
+LIBS += -lpng -lm -lz -lpspgu -lpsppower -lpspaudio -lpsprtc -lpspaudiocodec
+EXTRA_TARGETS = EBOOT.PBP
+include $(PSPSDK)/lib/build.mak
+# TODO image generation
 endif
 
 pprof: platform/linux/pprof.c
@@ -278,7 +366,7 @@ endif
 # on x86, this is reduced by ~300MB when debug info is off (but not on ARM)
 # not using O3 and -fno-expensive-optimizations seems to also help, but you may
 # want to remove this stuff for better performance if your compiler can handle it
-ifndef DEBUG
+ifeq "$(DEBUG)" "0"
 ifeq (,$(findstring msvc,$(platform)))
 cpu/fame/famec.o: CFLAGS += -g0 -O2 -fno-expensive-optimizations
 else

@@ -38,17 +38,20 @@
 
 // PPC64: params: r3-r10, return: r3, temp: r0,r11-r12, saved: r14-r31
 // reserved: r0(zero), r1(stack), r2(TOC), r13(TID)
+// additionally reserved on OSX: r31(PIC), r30(frame), r11(parentframe)
+// for OSX PIC code, on function calls r12 must contain the called address
 #define RET_REG		3
 #define PARAM_REGS	{ 3, 4, 5, 6, 7, 8, 9, 10 }
-#define PRESERVED_REGS	{ 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 }
-#define TEMPORARY_REGS	{ 11, 12 }
+#define PRESERVED_REGS	{ 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29 }
+#define TEMPORARY_REGS	{ 12 }
 
-#define CONTEXT_REG	31
-#define STATIC_SH2_REGS	{ SHR_SR,30 , SHR_R(0),29 , SHR_R(1),28 }
+#define CONTEXT_REG	29
+#define STATIC_SH2_REGS	{ SHR_SR,28 , SHR_R(0),27 , SHR_R(1),26 }
 
 // if RA is 0 in non-update memory insns, ADDI/ADDIS, ISEL, it aliases with zero
 #define Z0		0  // zero register
 #define SP		1  // stack pointer
+#define CR		12 // call register
 // SPR registers
 #define XER		-1 // exception register
 #define LR		-8 // link register
@@ -160,15 +163,13 @@ enum { OPS_STD, OPS_STDU /*,OPS_STQ*/ };
 #define PPC_ADD_REG(rt, ra, rb) \
 	PPC_OP_REG(OP__EXT,OPE_ADD,rt,ra,rb)
 #define PPC_ADDC_REG(rt, ra, rb) \
-	PPC_OP_REG(OP__EXT,OPE_ADD|XOE,rt,ra,rb)
+	PPC_OP_REG(OP__EXT,OPE_ADDC,rt,ra,rb)
 #define PPC_SUB_REG(rt, rb, ra) /* NB reversed args (rb-ra) */ \
 	PPC_OP_REG(OP__EXT,OPE_SUBF,rt,ra,rb)
 #define PPC_SUBC_REG(rt, rb, ra) \
-	PPC_OP_REG(OP__EXT,OPE_SUBF|XOE,rt,ra,rb)
+	PPC_OP_REG(OP__EXT,OPE_SUBFC,rt,ra,rb)
 #define PPC_NEG_REG(rt, ra) \
 	PPC_OP_REG(OP__EXT,OPE_NEG,rt,ra,_)
-#define PPC_NEGC_REG(rt, ra) \
-	PPC_OP_REG(OP__EXT,OPE_NEG|XOE,rt,ra,_)
 
 #define PPC_CMP_REG(ra, rb) \
 	PPC_OP_REG(OP__EXT,OPE_CMP,1,ra,rb)
@@ -361,6 +362,11 @@ enum { OPS_STD, OPS_STDU /*,OPS_STQ*/ };
 #define	PPC_STB_IMM(rt, ra, offs16) \
 	PPC_OP_IMM(OP_STB,rt,ra,(u16)(offs16))
 
+#define	PPC_STXU_IMM(rt, ra, offs16) \
+	PPC_OP_IMM(OP__ST,rt,ra,((u16)(offs16)&~3)|OPS_STDU)
+#define	PPC_STWU_IMM(rt, ra, offs16) \
+	PPC_OP_IMM(OP_STWU,rt,ra,(u16)(offs16))
+
 // load/store, indexed
 
 #define PPC_LDX_REG(rt, ra, rb) \
@@ -406,6 +412,7 @@ enum { OPS_STD, OPS_STDU /*,OPS_STQ*/ };
 #define PPC_LDP_REG			PPC_LDX_REG
 #define PPC_STP_IMM			PPC_STX_IMM
 #define PPC_STP_REG			PPC_STX_REG
+#define PPC_STPU_IMM			PPC_STXU_IMM
 #define PPC_BFXP_IMM			PPC_BFX_IMM
 
 #define emith_uext_ptr(r)		EMIT(PPC_EXTUW_REG(r, r))
@@ -439,6 +446,7 @@ enum { OPS_STD, OPS_STDU /*,OPS_STQ*/ };
 #define PPC_LDP_REG			PPC_LDW_REG
 #define PPC_STP_IMM			PPC_STW_IMM
 #define PPC_STP_REG			PPC_STW_REG
+#define PPC_STPU_IMM			PPC_STWU_IMM
 #define PPC_BFXP_IMM			PPC_BFXW_IMM
 
 #define emith_uext_ptr(r)		/**/
@@ -1474,8 +1482,8 @@ static int emith_cond_check(int cond)
 	emith_jump_reg(r)
 
 #define emith_jump_ctx(offs) do { \
-	emith_ctx_read_ptr(AT, offs); \
-	emith_jump_reg(AT); \
+	emith_ctx_read_ptr(CR, offs); \
+	emith_jump_reg(CR); \
 } while (0)
 #define emith_jump_ctx_c(cond, offs) \
 	emith_jump_ctx(offs)
@@ -1493,9 +1501,23 @@ static int emith_cond_check(int cond)
 } while(0)
 
 #define emith_call_ctx(offs) do { \
-	emith_ctx_read_ptr(AT, offs); \
-	emith_call_reg(AT); \
+	emith_ctx_read_ptr(CR, offs); \
+	emith_call_reg(CR); \
 } while (0)
+
+#define emith_abijump_reg(r) \
+	if ((r) != CR) emith_move_r_r(CR, r); \
+	emith_jump_reg(CR)
+#define emith_abijump_reg_c(cond, r) \
+	emith_abijump_reg(r)
+#define emith_abicall(target) \
+	emith_move_r_ptr_imm(CR, target); \
+	emith_call_reg(CR);
+#define emith_abicall_cond(cond, target) \
+	emith_abicall(target)
+#define emith_abicall_reg(r) \
+	if ((r) != CR) emith_move_r_r(CR, r); \
+	emith_call_reg(CR)
 
 #define emith_call_cleanup()	/**/
 
@@ -1533,12 +1555,38 @@ static int emith_cond_check(int cond)
 } while (0)
 
 
+// this should normally be in libc clear_cache; however, it sometimes isn't.
+static NOINLINE void host_instructions_updated(void *base, void *end, int force)
+{
+	int step = 32, lgstep = 5;
+	char *_base = (char *)((uptr)base & ~(step-1));
+	int count = (((char *)end - _base) >> lgstep) + 1;
+
+	if (count <= 0) count = 1;	// make sure count is positive
+	base = _base;
+
+	asm volatile(
+	"	mtctr	%1;"
+	"0:	dcbst	0,%0;"
+	"	add	%0, %0, %2;"
+	"	bdnz	0b;"
+	"	sync"
+	: "+r"(_base) : "r"(count), "r"(step) : "ctr");
+
+	asm volatile(
+	"	mtctr	%1;"
+	"0:	icbi	0,%0;"
+	"	add	%0, %0, %2;"
+	"	bdnz	0b;"
+	"	isync"
+	: "+r"(base) : "r"(count), "r"(step) : "ctr");
+}
+
 // emitter ABI stuff
 #define emith_pool_check()	/**/
 #define emith_pool_commit(j)	/**/
 #define emith_insn_ptr()	((u8 *)tcache_ptr)
 #define emith_flush()		/**/
-#define host_instructions_updated(base, end) __builtin___clear_cache(base, end)
 #define emith_update_cache()	/**/
 #define emith_rw_offs_max()	0x7fff
 
@@ -1547,25 +1595,24 @@ static int emith_cond_check(int cond)
 #define emith_sh2_drc_entry() do { \
 	int _c, _z = PTR_SIZE; u32 _m = 0xffffc000; /* r14-r31 */ \
 	if (__builtin_parity(_m) == 1) _m |= 0x1; /* ABI align for SP is 16 */ \
-	int _s = count_bits(_m) * _z, _o = 0; \
-	for (_c = HOST_REGS-1; _m && _c >= 0; _m &= ~(1 << _c), _c--) \
+	int _s = count_bits(_m) * _z, _o = STACK_EXTRA; \
+	EMIT(PPC_STPU_IMM(SP, SP, -_s-STACK_EXTRA)); \
+	EMIT(PPC_MFSP_REG(AT, LR)); \
+	for (_c = 0; _m && _c < HOST_REGS; _m &= ~(1 << _c), _c++) \
 		if (_m & (1 << _c)) \
-			{ _o -= _z; if (_c) emith_write_r_r_offs_ptr(_c, SP, _o); } \
-	EMIT(PPC_MFSP_REG(10, LR)); \
-	emith_write_r_r_offs_ptr(10, SP, 2*PTR_SIZE); \
-	emith_write_r_r_offs_ptr(SP, SP, -_s-STACK_EXTRA); /* XXX stdu */ \
-	emith_add_r_r_ptr_imm(SP, SP, -_s-STACK_EXTRA); \
+			{ if (_c) emith_write_r_r_offs_ptr(_c, SP, _o); _o += _z; } \
+	emith_write_r_r_offs_ptr(AT, SP, _o + _z); \
 } while (0)
 #define emith_sh2_drc_exit() do { \
 	int _c, _z = PTR_SIZE; u32 _m = 0xffffc000; \
 	if (__builtin_parity(_m) == 1) _m |= 0x1; \
 	int _s = count_bits(_m) * _z, _o = STACK_EXTRA; \
+	emith_read_r_r_offs_ptr(AT, SP, _o+_s + _z); \
+	EMIT(PPC_MTSP_REG(AT, LR)); \
 	for (_c = 0; _m && _c < HOST_REGS; _m &= ~(1 << _c), _c++) \
 		if (_m & (1 << _c)) \
 			{ if (_c) emith_read_r_r_offs_ptr(_c, SP, _o); _o += _z; } \
 	emith_add_r_r_ptr_imm(SP, SP, _s+STACK_EXTRA); \
-	emith_read_r_r_offs_ptr(10, SP, 2*PTR_SIZE); \
-	EMIT(PPC_MTSP_REG(10, LR)); \
 	emith_ret(); \
 } while (0)
 

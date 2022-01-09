@@ -11,98 +11,46 @@
 #include "ym2612.h"
 #include "sn76496.h"
 #include "../pico_int.h"
-#include "../cd/cue.h"
 #include "mix.h"
+#include "emu2413/emu2413.h"
 
 void (*PsndMix_32_to_16l)(short *dest, int *src, int count) = mix_32_to_16l_stereo;
 
 // master int buffer to mix to
-static int PsndBuffer[2*(44100+100)/50];
+// +1 for a fill triggered by an instruction overhanging into the next scanline
+static s32 PsndBuffer[2*(44100+100)/50+2];
 
 // cdda output buffer
-short cdda_out_buffer[2*1152];
+s16 cdda_out_buffer[2*1152];
 
 // sn76496
 extern int *sn76496_regs;
 
-// Low pass filter 'previous' samples
-static int32_t lpf_lp;
-static int32_t lpf_rp;
+// ym2413
+#define YM2413_CLK 3579545
+OPLL old_opll;
+static OPLL *opll = NULL;
+unsigned YM2413_reg;
 
-static void low_pass_filter_stereo(int *buf32, int length)
+
+PICO_INTERNAL void PsndInit(void)
 {
-  int samples = length;
-  int *out32 = buf32;
-  // Restore previous samples
-  int32_t lpf_l = lpf_lp;
-  int32_t lpf_r = lpf_rp;
-
-  // Single-pole low-pass filter (6 dB/octave)
-  int32_t factor_a = PicoIn.sndFilterRange;
-  int32_t factor_b = 0x10000 - factor_a;
-
-  do
-  {
-    // Apply low-pass filter
-    lpf_l = (lpf_l * factor_a) + (out32[0] * factor_b);
-    lpf_r = (lpf_r * factor_a) + (out32[1] * factor_b);
-
-    // 16.16 fixed point
-    lpf_l >>= 16;
-    lpf_r >>= 16;
-
-    // Update sound buffer
-    *out32++ = lpf_l;
-    *out32++ = lpf_r;
-  }
-  while (--samples);
-
-  // Save last samples for next frame
-  lpf_lp = lpf_l;
-  lpf_rp = lpf_r;
+  opll = OPLL_new(YM2413_CLK, PicoIn.sndRate);
+  OPLL_setChipType(opll,0);
+  OPLL_reset(opll);
 }
 
-static void low_pass_filter_mono(int *buf32, int length)
+PICO_INTERNAL void PsndExit(void)
 {
-  int samples = length;
-  int *out32 = buf32;
-  // Restore previous sample
-  int32_t lpf_l = lpf_lp;
-
-  // Single-pole low-pass filter (6 dB/octave)
-  int32_t factor_a = PicoIn.sndFilterRange;
-  int32_t factor_b = 0x10000 - factor_a;
-
-  do
-  {
-    // Apply low-pass filter
-    lpf_l = (lpf_l * factor_a) + (out32[0] * factor_b);
-
-    // 16.16 fixed point
-    lpf_l >>= 16;
-
-    // Update sound buffer
-    *out32++ = lpf_l;
-  }
-  while (--samples);
-
-  // Save last sample for next frame
-  lpf_lp = lpf_l;
+  OPLL_delete(opll);
+  opll = NULL;
 }
-
-void (*low_pass_filter)(int *buf32, int length) = low_pass_filter_stereo;
 
 PICO_INTERNAL void PsndReset(void)
 {
   // PsndRerate calls YM2612Init, which also resets
   PsndRerate(0);
   timers_reset();
-
-  // Reset low pass filter
-  lpf_lp = 0;
-  lpf_rp = 0;
-
-  mix_reset();
 }
 
 
@@ -119,7 +67,9 @@ void PsndRerate(int preserve_state)
     ym2612_pack_state();
     memcpy(state, YM2612GetRegs(), 0x204);
   }
-  YM2612Init(Pico.m.pal ? OSC_PAL/7 : OSC_NTSC/7, PicoIn.sndRate, !(PicoIn.opt&POPT_DIS_FM_SSGEG));
+  YM2612Init(Pico.m.pal ? OSC_PAL/7 : OSC_NTSC/7, PicoIn.sndRate,
+        ((PicoIn.opt&POPT_DIS_FM_SSGEG) ? 0 : ST_SSG) |
+        ((PicoIn.opt&POPT_EN_FM_DAC)    ? ST_DAC : 0));
   if (preserve_state) {
     // feed it back it's own registers, just like after loading state
     memcpy(YM2612GetRegs(), state, 0x204);
@@ -129,6 +79,12 @@ void PsndRerate(int preserve_state)
   if (preserve_state) memcpy(state, sn76496_regs, 28*4); // remember old state
   SN76496_init(Pico.m.pal ? OSC_PAL/15 : OSC_NTSC/15, PicoIn.sndRate);
   if (preserve_state) memcpy(sn76496_regs, state, 28*4); // restore old state
+
+  if(opll != NULL){
+    if (preserve_state) memcpy(&old_opll, opll, sizeof(OPLL)); // remember old state
+    OPLL_setRate(opll, PicoIn.sndRate);
+    OPLL_reset(opll);
+  }
 
   if (state)
     free(state);
@@ -151,9 +107,7 @@ void PsndRerate(int preserve_state)
 
   // set mixer
   PsndMix_32_to_16l = (PicoIn.opt & POPT_EN_STEREO) ? mix_32_to_16l_stereo : mix_32_to_16_mono;
-
-  // set low pass filter
-  low_pass_filter = (PicoIn.opt & POPT_EN_STEREO) ? low_pass_filter_stereo : low_pass_filter_mono;
+  mix_reset(PicoIn.opt & POPT_EN_SNDFILTER ? PicoIn.sndFilterAlpha : 0);
 
   if (PicoIn.AHW & PAHW_PICO)
     PicoReratePico();
@@ -210,21 +164,21 @@ PICO_INTERNAL void PsndDoDAC(int cyc_to)
   Pico.snd.dac_val = dout;
 }
 
-PICO_INTERNAL void PsndDoPSG(int line_to)
+PICO_INTERNAL void PsndDoPSG(int cyc_to)
 {
   int pos, len;
   int stereo = 0;
 
-  // Q16, number of samples since last call
-  len = ((line_to+1) * Pico.snd.smpl_mult) - Pico.snd.psg_pos;
-  if (len <= 0)
-    return;
+  // number of samples to fill in buffer (Q20)
+  len = (cyc_to * Pico.snd.clkl_mult) - Pico.snd.psg_pos;
 
   // update position and calculate buffer offset and length
-  pos = (Pico.snd.psg_pos+0x8000) >> 16;
+  pos = (Pico.snd.psg_pos+0x80000) >> 20;
   Pico.snd.psg_pos += len;
-  len = ((Pico.snd.psg_pos+0x8000) >> 16) - pos;
+  len = ((Pico.snd.psg_pos+0x80000) >> 20) - pos;
 
+  if (len <= 0)
+    return;
   if (!PicoIn.sndOut || !(PicoIn.opt & POPT_EN_PSG))
     return;
 
@@ -235,22 +189,62 @@ PICO_INTERNAL void PsndDoPSG(int line_to)
   SN76496Update(PicoIn.sndOut + pos, len, stereo);
 }
 
+#if 0
+PICO_INTERNAL void PsndDoYM2413(int cyc_to)
+{
+  int pos, len;
+  int stereo = 0;
+  short *buf;
+
+  // number of samples to fill in buffer (Q20)
+  len = (cyc_to * Pico.snd.clkl_mult) - Pico.snd.ym2413_pos;
+
+  // update position and calculate buffer offset and length
+  pos = (Pico.snd.ym2413_pos+0x80000) >> 20;
+  Pico.snd.ym2413_pos += len;
+  len = ((Pico.snd.ym2413_pos+0x80000) >> 20) - pos;
+
+  if (len <= 0)
+    return;
+  if (!PicoIn.sndOut || !(PicoIn.opt & POPT_EN_YM2413))
+    return;
+
+  if (PicoIn.opt & POPT_EN_STEREO) {
+    stereo = 1;
+    pos <<= 1;
+  }
+
+  buf = PicoIn.sndOut + pos;
+  while (len-- > 0) {
+    int16_t getdata = OPLL_calc(opll) * 3;
+    *buf++ += getdata;
+    buf += stereo; // only left for stereo, to be mixed to right later
+  }
+}
+#endif
+
+void YM2413_regWrite(unsigned data){
+  OPLL_writeIO(opll,0,data);
+}
+void YM2413_dataWrite(unsigned data){
+  OPLL_writeIO(opll,1,data);
+}
+
+
 PICO_INTERNAL void PsndDoFM(int cyc_to)
 {
   int pos, len;
   int stereo = 0;
 
-  // Q16, number of samples since last call
+  // Q20, number of samples since last call
   len = (cyc_to * Pico.snd.clkl_mult) - Pico.snd.fm_pos;
-
-  // don't do this too often (about every 4th scanline)
-  if (len >> 20 <= PicoIn.sndRate >> 12)
-    return;
 
   // update position and calculate buffer offset and length
   pos = (Pico.snd.fm_pos+0x80000) >> 20;
   Pico.snd.fm_pos += len;
   len = ((Pico.snd.fm_pos+0x80000) >> 20) - pos;
+  if (len <= 0)
+    return;
 
   // fill buffer
   if (PicoIn.opt & POPT_EN_STEREO) {
@@ -271,7 +265,7 @@ static void cdda_raw_update(int *buffer, int length)
   if (PicoIn.sndRate <  22050 - 100) mult = 4;
   cdda_bytes *= mult;
 
-  ret = pm_read(cdda_out_buffer, cdda_bytes, Pico_mcd->cdda_stream);
+  ret = pm_read_audio(cdda_out_buffer, cdda_bytes, Pico_mcd->cdda_stream);
   if (ret < cdda_bytes) {
     memset((char *)cdda_out_buffer + ret, 0, cdda_bytes - ret);
     Pico_mcd->cdda_stream = NULL;
@@ -323,7 +317,7 @@ PICO_INTERNAL void PsndClear(void)
   if (!(PicoIn.opt & POPT_EN_FM))
     memset32(PsndBuffer, 0, PicoIn.opt & POPT_EN_STEREO ? len*2 : len);
   // drop pos remainder to avoid rounding errors (not entirely correct though)
-  Pico.snd.dac_pos = Pico.snd.fm_pos = Pico.snd.psg_pos = 0;
+  Pico.snd.dac_pos = Pico.snd.fm_pos = Pico.snd.psg_pos = Pico.snd.ym2413_pos = 0;
 }
 
 
@@ -333,7 +327,7 @@ static int PsndRender(int offset, int length)
   int stereo = (PicoIn.opt & 8) >> 3;
   int fmlen = ((Pico.snd.fm_pos+0x80000) >> 20);
   int daclen = ((Pico.snd.dac_pos+0x80000) >> 20);
-  int psglen = ((Pico.snd.psg_pos+0x8000) >> 16);
+  int psglen = ((Pico.snd.psg_pos+0x80000) >> 20);
 
   buf32 = PsndBuffer+(offset<<stereo);
 
@@ -344,7 +338,7 @@ static int PsndRender(int offset, int length)
     return length;
   }
 
-  // Fill up DAC output in case of missing samples (Q16 rounding errors)
+  // Fill up DAC output in case of missing samples (Q rounding errors)
   if (length-daclen > 0) {
     short *dacbuf = PicoIn.sndOut + (daclen << stereo);
     Pico.snd.dac_pos += (length-daclen) << 20;
@@ -360,7 +354,7 @@ static int PsndRender(int offset, int length)
   // Add in parts of the PSG output not yet done
   if (length-psglen > 0) {
     short *psgbuf = PicoIn.sndOut + (psglen << stereo);
-    Pico.snd.psg_pos += (length-psglen) << 16;
+    Pico.snd.psg_pos += (length-psglen) << 20;
     if (PicoIn.opt & POPT_EN_PSG)
       SN76496Update(psgbuf, length-psglen, stereo);
   }
@@ -394,11 +388,6 @@ static int PsndRender(int offset, int length)
   if ((PicoIn.AHW & PAHW_32X) && (PicoIn.opt & POPT_EN_PWM))
     p32x_pwm_update(buf32, length-offset, stereo);
 
-  // Apply low pass filter, if required
-  if (PicoIn.sndFilter == 1) {
-    low_pass_filter(buf32, length);
-  }
-
   // convert + limit to normal 16bit output
   PsndMix_32_to_16l(PicoIn.sndOut+(offset<<stereo), buf32, length-offset);
 
@@ -422,23 +411,38 @@ PICO_INTERNAL void PsndGetSamples(int y)
 static int PsndRenderMS(int offset, int length)
 {
   int stereo = (PicoIn.opt & 8) >> 3;
-  int psglen = ((Pico.snd.psg_pos+0x8000) >> 16);
+  int psglen = ((Pico.snd.psg_pos+0x80000) >> 20);
+  int ym2413len = ((Pico.snd.ym2413_pos+0x80000) >> 20);
 
   pprof_start(sound);
 
   // Add in parts of the PSG output not yet done
   if (length-psglen > 0) {
     short *psgbuf = PicoIn.sndOut + (psglen << stereo);
-    Pico.snd.psg_pos += (length-psglen) << 16;
+    Pico.snd.psg_pos += (length-psglen) << 20;
     if (PicoIn.opt & POPT_EN_PSG)
       SN76496Update(psgbuf, length-psglen, stereo);
   }
 
+  if (length-ym2413len > 0) {
+    short *ym2413buf = PicoIn.sndOut + (ym2413len << stereo);
+    Pico.snd.ym2413_pos += (length-ym2413len) << 20;
+    int len = (length-ym2413len);
+    if (PicoIn.opt & POPT_EN_YM2413){
+      while (len-- > 0) {
+        int16_t getdata = OPLL_calc(opll) * 3;
+        *ym2413buf += getdata;
+        ym2413buf += 1<<stereo;
+      }
+    }
+  }
+
   // upmix to "stereo" if needed
   if (PicoIn.opt & POPT_EN_STEREO) {
-    int i, *p;
-    for (i = length, p = (void *)PicoIn.sndOut; i > 0; i--, p++)
-      *p |= *p << 16;
+    int i;
+    short *p;
+    for (i = length, p = (short *)PicoIn.sndOut; i > 0; i--, p+=2)
+      *(p + 1) = *p;
   }
 
   pprof_end(sound);
