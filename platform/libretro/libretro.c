@@ -81,6 +81,7 @@ int _newlib_vm_size_user = 1 << TARGET_SIZE_2;
 #include <compat/strcasestr.h>
 
 #ifdef PORTANDROID
+#define _cb_type_lock_
 #include "emu_retro.h"
 #endif
 
