@@ -202,9 +202,13 @@ ifeq "$(USE_LIBRETRO_VFS)" "1"
 OBJS += platform/libretro/libretro-common/compat/compat_posix_string.o
 OBJS += platform/libretro/libretro-common/compat/compat_strl.o
 OBJS += platform/libretro/libretro-common/compat/fopen_utf8.o
+OBJS += platform/libretro/libretro-common/memmap/memmap.o
 OBJS += platform/libretro/libretro-common/encodings/encoding_utf.o
+OBJS += platform/libretro/libretro-common/string/stdstring.o
+OBJS += platform/libretro/libretro-common/time/rtime.o
 OBJS += platform/libretro/libretro-common/streams/file_stream.o
 OBJS += platform/libretro/libretro-common/streams/file_stream_transforms.o
+OBJS += platform/libretro/libretro-common/file/file_path.o
 OBJS += platform/libretro/libretro-common/vfs/vfs_implementation.o
 endif
 PLATFORM_ZLIB ?= 1
@@ -308,6 +312,8 @@ target_: $(TARGET)
 
 clean:
 	$(RM) $(TARGET) $(OBJS) pico/pico_int_offs.h
+	$(MAKE) -C cpu/cyclone clean
+	$(MAKE) -C cpu/musashi clean
 	$(RM) -r .od_data
 
 $(TARGET): $(OBJS)
@@ -315,7 +321,7 @@ $(TARGET): $(OBJS)
 ifeq ($(STATIC_LINKING_LINK), 1)
 	$(AR) rcs $@ $^
 else
-	$(LD) $(LINKOUT)$@ $^ $(LDFLAGS) $(LDLIBS)
+	$(LD) $(LINKOUT)$@ $^ $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 endif
 
 ifeq "$(PLATFORM)" "psp"
@@ -333,7 +339,7 @@ pprof: platform/linux/pprof.c
 	$(CC) $(CFLAGS) -O2 -ggdb -DPPROF -DPPROF_TOOL -I../../ -I. $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
 pico/pico_int_offs.h: tools/mkoffsets.sh
-	make -C tools/ XCC="$(CC)" XCFLAGS="$(CFLAGS)" XPLATFORM="$(platform)"
+	make -C tools/ XCC="$(CC)" XCFLAGS="$(CFLAGS) -UUSE_LIBRETRO_VFS" XPLATFORM="$(platform)"
 
 %.o: %.c
 	$(CC) -c $(OBJOUT)$@ $< $(CFLAGS)
