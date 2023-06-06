@@ -128,8 +128,9 @@ enum TPicoGameState {
 	PGS_Suspending,		/* PSP */
 	PGS_SuspendWake,	/* PSP */
 };
-
+#ifndef PORTANDROID //avoid name conflict
 void  emu_init(void);
+#endif
 void  emu_finish(void);
 void  emu_loop(void);
 

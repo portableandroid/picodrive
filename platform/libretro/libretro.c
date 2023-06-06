@@ -81,6 +81,11 @@ static uint64_t page_table[2] = {0, 0};
 #include <libretro.h>
 #include <compat/strcasestr.h>
 
+#ifdef PORTANDROID
+#define _cb_type_lock_
+#include "emu_retro.h"
+#endif
+
 static retro_log_printf_t log_cb;
 static retro_video_refresh_t video_cb;
 static retro_input_poll_t input_poll_cb;
@@ -1948,7 +1953,11 @@ static void update_variables(bool first_run)
    var.key = "picodrive_audio_filter";
    PicoIn.opt &= ~POPT_EN_SNDFILTER;
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+#ifdef PORTANDROID
+      if (strcmp(var.value, "enabled") == 0)
+#else
       if (strcmp(var.value, "low-pass") == 0)
+#endif
          PicoIn.opt |= POPT_EN_SNDFILTER;
    }
 
@@ -2190,6 +2199,10 @@ void retro_run(void)
             &audio_latency);
       update_audio_latency = false;
    }
+
+#ifdef PORTANDROID
+   PicoIn.skipFrame = cb_context.video_skip ? 1 : 0;
+#endif
 
    PicoFrame();
 
