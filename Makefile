@@ -1,5 +1,5 @@
 $(LD) ?= $(CC)
-TARGET ?= PicoDrive
+TARGET ?= picodrive
 ASAN ?= 0
 DEBUG ?= 0
 CFLAGS += -I$(PWD)
@@ -48,6 +48,8 @@ ifeq "$(ASAN)" "1"
 else
 ifeq "$(DEBUG)" "0"
 	CFLAGS += -O3 -DNDEBUG
+else
+	CFLAGS += -O1
 endif
 endif
 	LD = $(CC)
@@ -59,16 +61,21 @@ endif
 chkCCflag = $(shell n=/dev/null; echo $(1) | tr " " "\n" | while read f; do \
 	    $(CC) $$f -x c -c $$n -o $$n 2>$$n && echo "_$$f" | tr -d _; done)
 
-ifeq ("$(PLATFORM)",$(filter "$(PLATFORM)","gp2x" "opendingux" "miyoo" "rpi1"))
+ifeq ("$(PLATFORM)",$(filter "$(PLATFORM)","gp2x" "opendingux" "rpi1"))
 # very small caches, avoid optimization options making the binary much bigger
-CFLAGS += -fno-common -fno-stack-protector -finline-limit=42 -fno-unroll-loops -ffast-math
+CFLAGS += -fno-common -finline-limit=42 -fno-unroll-loops -ffast-math
+CFLAGS += $(call chkCCflag, -fno-stack-protector)
 ifneq ($(call chkCCflag, -fipa-ra),) # gcc >= 5
 CFLAGS += $(call chkCCflag, -flto -fipa-pta -fipa-ra)
 else
 # these improve execution speed on 32bit arm/mips with gcc pre-5 toolchains
-CFLAGS += -fno-ipa-cp -fno-caller-saves -fno-guess-branch-probability -fno-regmove
+CFLAGS += $(call chkCCflag, -fno-caller-saves -fno-guess-branch-probability -fno-regmove)
 # very old gcc toolchains may not have these options
-CFLAGS += $(call chkCCflag, -fno-tree-loop-if-convert -fipa-pta)
+CFLAGS += $(call chkCCflag, -fno-tree-loop-if-convert -fipa-pta -fno-ipa-cp)
+endif
+else
+ifneq ($(STATIC_LINKING), 1)
+CFLAGS += $(call chkCCflag, -flto)
 endif
 endif
 
@@ -97,7 +104,7 @@ asm_32xmemory ?= 1
 else
 use_fame ?= 1
 use_cz80 ?= 1
-ifneq (,$(filter x86% i386% mips% aarch% riscv% powerpc% ppc%, $(ARCH)))
+ifneq (,$(filter x86% i386% i686% mips% aarch% riscv% powerpc% ppc%, $(ARCH)))
 use_sh2drc ?= 1
 endif
 endif
@@ -106,15 +113,25 @@ endif
 
 # TODO this should somehow go to the platform directory?
 ifeq "$(PLATFORM)" "generic"
-$(TARGET).zip: $(TARGET)
+PicoDrive.zip: $(TARGET)
 	$(RM) -rf .od_data
 	mkdir .od_data
 	cp -r platform/linux/skin .od_data
 	cp platform/game_def.cfg .od_data
-	cp $< .od_data/PicoDrive
-	$(STRIP) .od_data/PicoDrive
+	$(STRIP) $< -o .od_data/picodrive
 	cd .od_data && zip -9 -r ../$@ *
-all: $(TARGET).zip
+all: PicoDrive.zip
+endif
+
+ifeq "$(PLATFORM)" "win32"
+PicoDrive.zip: $(TARGET)
+	$(RM) -rf .od_data
+	mkdir .od_data
+	cp -r platform/linux/skin .od_data
+	cp platform/game_def.cfg .od_data
+	$(STRIP) $< -o .od_data/PicoDrive.exe
+	cd .od_data && zip -9 -r ../$@ *
+all: PicoDrive.zip
 endif
 
 ifeq "$(PLATFORM)" "opendingux"
@@ -123,48 +140,36 @@ ifeq "$(PLATFORM)" "opendingux"
 	mkdir .od_data
 	cp -r platform/opendingux/data/. .od_data
 	cp platform/game_def.cfg .od_data
-	cp $< .od_data/PicoDrive
-	$(STRIP) .od_data/PicoDrive
+	$(STRIP) $< -o .od_data/picodrive
 .PHONY: .od_data
 
 ifneq (,$(filter %__DINGUX__, $(CFLAGS)))
 # "legacy" dingux without opk support
-$(TARGET)-dge.zip: .od_data
+PicoDrive-dge.zip: .od_data
 	rm -f .od_data/default.*.desktop
 	cd .od_data && zip -9 -r ../$@ *
-all: $(TARGET)-dge.zip
+all: PicoDrive-dge.zip
 CFLAGS += -DSDL_SURFACE_SW # some legacy dinguces had bugs in HWSURFACE
 else
-$(TARGET).opk: .od_data
+ifneq (,$(filter %__MIYOO__, $(CFLAGS)))
+PicoDrive-miyoo.ipk: .od_data
+	rm -f .od_data/default.*.desktop .od_data/PicoDrive.dge
+	gm2xpkg -i platform/miyoo/pkg.cfg
+	mv picodrive.ipk $@
+	@gm2xpkg -c platform/miyoo/pkg.cfg >/dev/null 2>&1
+all: PicoDrive-miyoo.ipk
+else
+PicoDrive.opk: .od_data
 	rm -f .od_data/PicoDrive.dge
 	mksquashfs .od_data $@ -all-root -noappend -no-exports -no-xattrs
-all: $(TARGET).opk
+all: PicoDrive.opk
 endif
-
-ifneq (,$(filter %mips32r2, $(CFLAGS)))
-CFLAGS += -DMIPS_USE_SYNCI # mips32r2 clear_cache uses SYNCI instead of a syscall
 endif
 
 OBJS += platform/opendingux/inputmap.o
 use_inputmap ?= 1
 
 # OpenDingux is a generic platform, really.
-PLATFORM := generic
-endif
-ifeq "$(PLATFORM)" "miyoo"
-$(TARGET).zip: $(TARGET)
-	$(RM) -rf .od_data
-	mkdir .od_data
-	cp -r platform/opendingux/data/. .od_data
-	cp platform/game_def.cfg .od_data
-	cp $< .od_data/PicoDrive
-	$(STRIP) .od_data/PicoDrive
-	rm -f .od_data/default.*.desktop .od_data/PicoDrive.dge
-	cd .od_data && zip -9 -r ../$@ *
-all: $(TARGET).zip
-
-OBJS += platform/opendingux/inputmap.o
-use_inputmap ?= 1
 PLATFORM := generic
 endif
 ifeq ("$(PLATFORM)",$(filter "$(PLATFORM)","rpi1" "rpi2"))
@@ -180,7 +185,7 @@ endif
 OBJS += platform/linux/emu.o platform/linux/blit.o # FIXME
 OBJS += platform/common/plat_sdl.o platform/common/input_sdlkbd.o
 OBJS += platform/libpicofe/plat_sdl.o platform/libpicofe/in_sdl.o
-OBJS += platform/libpicofe/plat_dummy.o platform/libpicofe/linux/plat.o
+OBJS += platform/libpicofe/linux/plat.o
 USE_FRONTEND = 1
 endif
 ifeq "$(PLATFORM)" "generic"
@@ -197,7 +202,7 @@ else
 OBJS += platform/common/plat_sdl.o platform/common/inputmap_kbd.o
 endif
 OBJS += platform/libpicofe/plat_sdl.o platform/libpicofe/in_sdl.o
-OBJS += platform/libpicofe/plat_dummy.o platform/libpicofe/linux/plat.o
+OBJS += platform/libpicofe/linux/plat.o
 USE_FRONTEND = 1
 endif
 ifeq "$(PLATFORM)" "pandora"
@@ -230,12 +235,12 @@ OBJS += platform/gp2x/vid_mmsp2.o
 OBJS += platform/gp2x/vid_pollux.o 
 OBJS += platform/gp2x/warm.o 
 USE_FRONTEND = 1
-PLATFORM_MP3 = 1
+PLATFORM_MP3 ?= 1
 endif
 ifeq "$(PLATFORM)" "psp"
 CFLAGS += -DUSE_BGR565 -G8 # -DLPRINTF_STDIO -DFW15
 LDLIBS += -lpspgu -lpspge -lpsppower -lpspaudio -lpspdisplay -lpspaudiocodec
-LDLIBS += -lpsprtc -lpspctrl -lpspsdk -lc -lpspnet_inet -lpspuser -lpspkernel
+LDLIBS += -lpspctrl
 platform/common/main.o: CFLAGS += -Dmain=pico_main
 OBJS += platform/psp/plat.o
 OBJS += platform/psp/emu.o
@@ -245,21 +250,43 @@ OBJS += platform/psp/asm_utils.o
 OBJS += platform/psp/mp3.o
 USE_FRONTEND = 1
 endif
+ifeq "$(PLATFORM)" "ps2"
+CFLAGS += -DUSE_BGR555 # -DLOG_TO_FILE
+LDLIBS += -lpatches -lgskit -ldmakit -lps2_drivers
+OBJS += platform/ps2/plat.o
+OBJS += platform/ps2/emu.o
+OBJS += platform/ps2/in_ps2.o
+USE_FRONTEND = 1
+endif
+ifeq "$(PLATFORM)" "win32"
+CFLAGS += -DSDL_OVERLAY_2X -DSDL_BUFFER_3X -DSDL_REDRAW_EVT
+OBJS += platform/win32/plat.o
+OBJS += platform/linux/emu.o platform/linux/blit.o # FIXME
+OBJS += platform/common/plat_sdl.o platform/common/inputmap_kbd.o
+OBJS += platform/libpicofe/plat_sdl.o platform/libpicofe/in_sdl.o
+USE_FRONTEND = 1
+endif
 ifeq "$(PLATFORM)" "libretro"
 OBJS += platform/libretro/libretro.o
 ifneq ($(STATIC_LINKING), 1)
-OBJS += platform/libretro/libretro-common/compat/compat_strcasestr.o
-ifeq "$(USE_LIBRETRO_VFS)" "1"
-OBJS += platform/libretro/libretro-common/compat/compat_posix_string.o
-OBJS += platform/libretro/libretro-common/compat/compat_strl.o
-OBJS += platform/libretro/libretro-common/compat/fopen_utf8.o
-OBJS += platform/libretro/libretro-common/encodings/encoding_utf.o
-OBJS += platform/libretro/libretro-common/string/stdstring.o
-OBJS += platform/libretro/libretro-common/time/rtime.o
-OBJS += platform/libretro/libretro-common/streams/file_stream.o
-OBJS += platform/libretro/libretro-common/streams/file_stream_transforms.o
+CFLAGS += -DHAVE_ZLIB
+OBJS += platform/libretro/libretro-common/formats/png/rpng.o
+OBJS += platform/libretro/libretro-common/streams/trans_stream.o
+OBJS += platform/libretro/libretro-common/streams/trans_stream_pipe.o
+OBJS += platform/libretro/libretro-common/streams/trans_stream_zlib.o
+OBJS += platform/libretro/libretro-common/file/file_path_io.o
 OBJS += platform/libretro/libretro-common/file/file_path.o
 OBJS += platform/libretro/libretro-common/vfs/vfs_implementation.o
+OBJS += platform/libretro/libretro-common/time/rtime.o
+OBJS += platform/libretro/libretro-common/string/stdstring.o
+OBJS += platform/libretro/libretro-common/compat/compat_strcasestr.o
+OBJS += platform/libretro/libretro-common/encodings/encoding_utf.o
+OBJS += platform/libretro/libretro-common/compat/compat_strl.o
+ifeq "$(USE_LIBRETRO_VFS)" "1"
+OBJS += platform/libretro/libretro-common/compat/compat_posix_string.o
+OBJS += platform/libretro/libretro-common/compat/fopen_utf8.o
+OBJS += platform/libretro/libretro-common/streams/file_stream.o
+OBJS += platform/libretro/libretro-common/streams/file_stream_transforms.o
 endif
 endif
 ifeq "$(USE_LIBRETRO_VFS)" "1"
@@ -322,14 +349,26 @@ CHDR_OBJS += $(CHDR)/src/libchdr_chd.o $(CHDR)/src/libchdr_cdrom.o
 CHDR_OBJS += $(CHDR)/src/libchdr_flac.o
 CHDR_OBJS += $(CHDR)/src/libchdr_bitstream.o $(CHDR)/src/libchdr_huffman.o
 
-# lzma - use 19.00 as newer versions have compile problems with libretro platforms
-LZMA = $(CHDR)/deps/lzma-19.00
+LZMA = $(CHDR)/deps/lzma-24.05
 LZMA_OBJS += $(LZMA)/src/CpuArch.o $(LZMA)/src/Alloc.o $(LZMA)/src/LzmaEnc.o
 LZMA_OBJS += $(LZMA)/src/Sort.o $(LZMA)/src/LzmaDec.o $(LZMA)/src/LzFind.o
 LZMA_OBJS += $(LZMA)/src/Delta.o
-$(LZMA_OBJS): CFLAGS += -D_7ZIP_ST
+$(LZMA_OBJS): CFLAGS += -DZ7_ST -Wno-unused
 
-OBJS += $(CHDR_OBJS)
+ZSTD = $(CHDR)/deps/zstd-1.5.6/lib
+ZSTD_OBJS += $(ZSTD)/common/entropy_common.o $(ZSTD)/common/error_private.o
+ZSTD_OBJS += $(ZSTD)/common/fse_decompress.o $(ZSTD)/common/xxhash.o
+ZSTD_OBJS += $(ZSTD)/common/zstd_common.o
+ZSTD_OBJS += $(ZSTD)/decompress/huf_decompress.o
+ifneq (,$(filter x86%, $(ARCH)))
+ZSTD_OBJS += $(ZSTD)/decompress/huf_decompress_amd64.o
+endif
+ZSTD_OBJS += $(ZSTD)/decompress/zstd_ddict.o
+ZSTD_OBJS += $(ZSTD)/decompress/zstd_decompress_block.o
+ZSTD_OBJS += $(ZSTD)/decompress/zstd_decompress.o
+$(ZSTD_OBJS) $(CHDR_OBJS): CFLAGS += -I$(ZSTD) -Wno-unused
+
+OBJS += $(CHDR_OBJS) $(ZSTD_OBJS)
 ifneq ($(STATIC_LINKING), 1)
 OBJS += $(LZMA_OBJS)
 endif
@@ -358,7 +397,7 @@ endif
 
 ifneq ($(findstring gcc,$(CC)),)
 ifneq ($(findstring SunOS,$(shell uname -a)),SunOS)
-ifeq ($(findstring Darwin,$(shell uname -a)),Darwin)
+ifneq ($(findstring clang,$(shell $(CC) -v 2>&1)),)
 LDFLAGS += -Wl,-map,$(TARGET).map
 else
 LDFLAGS += -Wl,-Map=$(TARGET).map
@@ -372,6 +411,7 @@ clean:
 	$(RM) $(TARGET) $(OBJS) pico/pico_int_offs.h
 	$(MAKE) -C cpu/cyclone clean
 	$(MAKE) -C cpu/musashi clean
+	$(MAKE) -C tools clean
 	$(RM) -r .od_data
 
 $(TARGET): $(OBJS)
@@ -423,6 +463,10 @@ ifneq (,$(findstring -flto,$(CFLAGS)))
 # to avoid saving and reloading it. However, this collides with the use of LTO.
 pico/32x/memory.o: CFLAGS += -fno-lto
 pico/32x/sh2soc.o: CFLAGS += -fno-lto
+cpu/sh2/compiler.o: CFLAGS += -fno-lto
+endif
+ifneq (,$(filter mips64%, $(ARCH))$(filter %mips32r2, $(CFLAGS)))
+CFLAGS += -DMIPS_USE_SYNCI # mips32r2 clear_cache uses SYNCI instead of a syscall
 endif
 endif
 
@@ -438,7 +482,9 @@ cpu/fame/famec.o: CFLAGS += -Od
 endif
 endif
 
-pico/carthw_cfg.c: pico/carthw.cfg
+tools/make_carthw_c:
+	make -C tools make_carthw_c
+pico/carthw_cfg.c: pico/carthw.cfg tools/make_carthw_c
 	tools/make_carthw_c $< $@
 
 # preprocessed asm files most probably include the offsets file
@@ -454,3 +500,4 @@ pico/memory.o pico/cd/memory.o pico/32x/memory.o : pico/memory.h
 $(shell grep -rl pico_int.h pico) : pico/pico_int.h
 # pico/cart.o : pico/carthw_cfg.c
 cpu/fame/famec.o: cpu/fame/famec.c cpu/fame/famec_opcodes.h
+platform/common/menu_pico.o: platform/libpicofe/menu.c

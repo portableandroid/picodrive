@@ -1,7 +1,7 @@
 /*
  * PicoDrive
  * (C) notaz, 2009,2010
- * (C) kub, 2019
+ * (C) irixxxx, 2019-2024
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -10,7 +10,7 @@
 
 // NB: 32X officially doesn't support H32 mode. However, it does work since the
 // cartridge slot carries the EDCLK signal which is always H40 clock and is used
-// as video clock by the 32X. The H32 MD image is overlayed with the 320 px 32X
+// as video clock by the 32X. The H32 MD image is overlaid with the 320 px 32X
 // image which has the same on-screen width. How the /YS signal on the cartridge
 // slot (signalling the display of background color) is processed in this case
 // is however unclear and might lead to glitches due to race conditions by the
@@ -348,9 +348,6 @@ void PicoDrawSetOutFormat32x(pdso_t which, int use_32x_line_mode)
     PicoDrawSetInternalBuf(NULL, 0);
     PicoDrawSetOutBufMD(Pico.est.Draw2FB, 328);
   }
-  // always need upscaling for H32, before mixing in 32X layer
-  PicoIn.opt |= POPT_EN_SOFTSCALE;
-  PicoIn.opt &= ~POPT_DIS_32C_BORDER;
 
   if (use_32x_line_mode)
     // we'll draw via FinalizeLine32xRGB555 (rare)

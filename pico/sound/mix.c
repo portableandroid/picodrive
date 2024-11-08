@@ -1,7 +1,7 @@
 /*
  * some code for sample mixing
  * (C) notaz, 2006,2007
- * (C) kub, 2019,2020		added filtering
+ * (C) irixxxx, 2019,2020		added filtering
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -18,7 +18,7 @@
 	val -= val >> 3; /* reduce level to avoid clipping */	\
 	if ((s16)val != val) val = (val < 0 ? MINOUT : MAXOUT)
 
-int mix_32_to_16l_level;
+int mix_32_to_16_level;
 
 static struct iir {
 	int	alpha;		// alpha for EMA low pass
@@ -63,33 +63,34 @@ static inline int filter_null(struct iir *fi2, int x)
 
 #define filter	filter_band
 
-#define mix_32_to_16l_stereo_core(dest, src, count, lv, fl) {	\
+#define mix_32_to_16_stereo_core(dest, src, count, lv, fl) {	\
 	int l, r;						\
 	struct iir lf = lfi2, rf = rfi2;			\
 								\
 	for (; count > 0; count--)				\
 	{							\
-		l = r = *dest;					\
+		l = *dest;					\
 		l += *src++ >> lv;				\
-		r += *src++ >> lv;				\
 		l = fl(&lf, l);					\
-		r = fl(&rf, r);					\
 		Limit16(l);					\
-		Limit16(r);					\
 		*dest++ = l;					\
+		r = *dest;					\
+		r += *src++ >> lv;				\
+		r = fl(&rf, r);					\
+		Limit16(r);					\
 		*dest++ = r;					\
 	}							\
 	lfi2 = lf, rfi2 = rf;					\
 }
 
-void mix_32_to_16l_stereo_lvl(s16 *dest, s32 *src, int count)
+void mix_32_to_16_stereo_lvl(s16 *dest, s32 *src, int count)
 {
-	mix_32_to_16l_stereo_core(dest, src, count, mix_32_to_16l_level, filter);
+	mix_32_to_16_stereo_core(dest, src, count, mix_32_to_16_level, filter);
 }
 
-void mix_32_to_16l_stereo(s16 *dest, s32 *src, int count)
+void mix_32_to_16_stereo(s16 *dest, s32 *src, int count)
 {
-	mix_32_to_16l_stereo_core(dest, src, count, 0, filter);
+	mix_32_to_16_stereo_core(dest, src, count, 0, filter);
 }
 
 void mix_32_to_16_mono(s16 *dest, s32 *src, int count)
@@ -113,7 +114,7 @@ void mix_16h_to_32(s32 *dest_buf, s16 *mp3_buf, int count)
 {
 	while (count--)
 	{
-		*dest_buf++ += *mp3_buf++ >> 1;
+		*dest_buf++ += (*mp3_buf++ * 5) >> 3;
 	}
 }
 
@@ -122,8 +123,8 @@ void mix_16h_to_32_s1(s32 *dest_buf, s16 *mp3_buf, int count)
 	count >>= 1;
 	while (count--)
 	{
-		*dest_buf++ += *mp3_buf++ >> 1;
-		*dest_buf++ += *mp3_buf++ >> 1;
+		*dest_buf++ += (*mp3_buf++ * 5) >> 3;
+		*dest_buf++ += (*mp3_buf++ * 5) >> 3;
 		mp3_buf += 1*2;
 	}
 }
@@ -133,8 +134,8 @@ void mix_16h_to_32_s2(s32 *dest_buf, s16 *mp3_buf, int count)
 	count >>= 1;
 	while (count--)
 	{
-		*dest_buf++ += *mp3_buf++ >> 1;
-		*dest_buf++ += *mp3_buf++ >> 1;
+		*dest_buf++ += (*mp3_buf++ * 5) >> 3;
+		*dest_buf++ += (*mp3_buf++ * 5) >> 3;
 		mp3_buf += 3*2;
 	}
 }
@@ -145,8 +146,8 @@ void mix_16h_to_32_resample_stereo(s32 *dest_buf, s16 *cdda_buf, int count, int 
 	int pos16 = 0;
 	while (count--) {
 		int pos = 2 * (pos16>>16);
-		*dest_buf++ += cdda_buf[pos  ] >> 1;
-		*dest_buf++ += cdda_buf[pos+1] >> 1;
+		*dest_buf++ += (cdda_buf[pos  ] * 5) >> 3;
+		*dest_buf++ += (cdda_buf[pos+1] * 5) >> 3;
 		pos16 += fac16;
 	}
 }
@@ -157,8 +158,8 @@ void mix_16h_to_32_resample_mono(s32 *dest_buf, s16 *cdda_buf, int count, int fa
 	int pos16 = 0;
 	while (count--) {
 		int pos = 2 * (pos16>>16);
-		*dest_buf   += cdda_buf[pos  ] >> 2;
-		*dest_buf++ += cdda_buf[pos+1] >> 2;
+		*dest_buf   += (cdda_buf[pos  ] * 5) >> 4;
+		*dest_buf++ += (cdda_buf[pos+1] * 5) >> 4;
 		pos16 += fac16;
 	}
 }

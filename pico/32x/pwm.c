@@ -1,6 +1,7 @@
 /*
  * PicoDrive
  * (C) notaz, 2009,2010,2013
+ * (C) irixxxx, 2019-2023
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -34,7 +35,7 @@ void p32x_pwm_ctl_changed(void)
   // but mars test disagrees
   pwm.mult = 0;
   if ((control & 0x0f) != 0)
-    pwm.mult = 0x10000 / cycles;
+    pwm.mult = (0x10000<<8) / (cycles+1);
 
   pwm.irq_timer = (control & 0x0f00) >> 8;
   pwm.irq_timer = ((pwm.irq_timer - 1) & 0x0f) + 1;
@@ -60,9 +61,7 @@ static int convert_sample(unsigned int v)
 {
   if (v > pwm.cycles)
     v = pwm.cycles;
-  if (v == 0)
-    return 0;
-  return v * pwm.mult - 0x10000/2;
+  return (v * pwm.mult >> 8) - 0x10000/2;
 }
 
 #define consume_fifo(sh2, m68k_cycles) { \

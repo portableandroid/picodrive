@@ -35,12 +35,13 @@ static int do_ack(int level)
   if (pv->pending_ints & pv->reg[1] & 0x20) {
     pv->pending_ints &= ~0x20;
     pv->status &= ~SR_F;
-    return (pv->reg[0] & pv->pending_ints & 0x10) >> 2;
+    if (pv->reg[0] & pv->pending_ints & 0x10)
+      return pv->hint_irq;
   }
   else if (pv->pending_ints & pv->reg[0] & 0x10)
     pv->pending_ints &= ~0x10;
 
-  return 0;
+  return (PicoIn.AHW & PAHW_PICO ? PicoPicoIrqAck(level) : 0);
 }
 
 /* callbacks */
@@ -139,8 +140,6 @@ PICO_INTERNAL void SekInit(void)
 // Reset the 68000:
 PICO_INTERNAL int SekReset(void)
 {
-  if (Pico.rom==NULL) return 1;
-
 #ifdef EMU_C68K
   CycloneReset(&PicoCpuCM68k);
 #endif
@@ -220,8 +219,9 @@ PICO_INTERNAL void SekPackCpu(unsigned char *cpu, int is_sub)
     *(u32 *)(cpu+0x50) = SekCycleCntS68k;
     *(s16 *)(cpu+0x4e) = SekCycleCntS68k - SekCycleAimS68k;
   } else {
-    *(u32 *)(cpu+0x50) = Pico.t.m68c_cnt;
-    *(u32 *)(cpu+0x4e) = Pico.t.m68c_cnt - Pico.t.m68c_aim;
+    *(u32 *)(cpu+0x50) = Pico.t.m68c_cnt + Pico.t.z80_buscycles +
+                          ((Pico.t.refresh_delay + (1<<14)/2) >> 14);
+    *(s16 *)(cpu+0x4e) = Pico.t.m68c_cnt - Pico.t.m68c_aim;
   }
 }
 
@@ -265,6 +265,8 @@ PICO_INTERNAL void SekUnpackCpu(const unsigned char *cpu, int is_sub)
   } else {
     Pico.t.m68c_cnt = *(u32 *)(cpu+0x50);
     Pico.t.m68c_aim = Pico.t.m68c_cnt - *(s16 *)(cpu+0x4e);
+    Pico.t.z80_buscycles = 0;
+    Pico.t.refresh_delay = 0;
   }
 }
 

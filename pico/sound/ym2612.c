@@ -193,6 +193,8 @@ UINT16 ym_tl_tab2[13*TL_RES_LEN];
 /* sin waveform table in 'decibel' scale (use only period/4 values) */
 static UINT16 ym_sin_tab[256];
 
+static int ym_init_tab;
+
 /* sustain level table (3dB per step) */
 /* bit0, bit1, bit2, bit3, bit4, bit5, bit6 */
 /* 1,    2,    4,    8,    16,   32,   64   (value)*/
@@ -550,7 +552,7 @@ static INLINE void recalc_volout(FM_SLOT *SLOT)
 {
 	INT16 vol_out = SLOT->volume;
 	if ((SLOT->ssg&0x0c) == 0x0c)
-		vol_out = (0x200 - SLOT->volume) & MAX_ATT_INDEX;
+		vol_out = (0x200 - vol_out) & MAX_ATT_INDEX;
 	SLOT->vol_out = vol_out + SLOT->tl;
 }
 
@@ -880,7 +882,7 @@ static INLINE UINT32 update_ssg_eg_phase(FM_SLOT *SLOT, UINT32 phase)
 			}
 		}
 	}
-//	recalc_volout(SLOT);
+	recalc_volout(SLOT);
 	return phase;
 }
 #endif
@@ -892,7 +894,8 @@ typedef struct
 	UINT16 vol_out2;
 	UINT16 vol_out3;
 	UINT16 vol_out4;
-	UINT32 pad[2];
+	UINT32 lfo_init_sft16;
+	UINT32 pad;
 	UINT32 phase1;   /* 10 */
 	UINT32 phase2;
 	UINT32 phase3;
@@ -1225,18 +1228,18 @@ static chan_rend_context crct;
 static void chan_render_prep(void)
 {
 	crct.eg_timer_add = ym2612.OPN.eg_timer_add;
+	crct.lfo_init_sft16 = g_lfo_ampm << 16;
 	crct.lfo_inc = ym2612.OPN.lfo_inc;
 }
 
-static void chan_render_finish(s32 *buffer, unsigned short length, int active_chans)
+static void chan_render_finish(s32 *buffer, int length, int active_chans)
 {
 	ym2612.OPN.eg_cnt = crct.eg_cnt;
 	ym2612.OPN.eg_timer = crct.eg_timer;
-	g_lfo_ampm = crct.pack >> 16; // need_save
-	ym2612.OPN.lfo_cnt = crct.lfo_cnt;
+	ym2612.OPN.lfo_cnt += ym2612.OPN.lfo_inc * length;
 }
 
-static UINT32 update_lfo_phase(FM_SLOT *SLOT, UINT32 block_fnum)
+static UINT32 update_lfo_phase(const FM_SLOT *SLOT, UINT32 block_fnum)
 {
 	UINT32 fnum_lfo;
 	INT32  lfo_fn_table_index_offset;
@@ -1273,7 +1276,7 @@ static int chan_render(s32 *buffer, int length, int c, UINT32 flags) // flags: s
 
 	if (crct.lfo_inc) {
 		flags |= 8;
-		flags |= g_lfo_ampm << 16;
+		flags |= crct.lfo_init_sft16;
 		flags |= crct.CH->AMmasks << 8;
 		if (crct.CH->ams == 8) // no ams
 		     flags &= ~0xf00;
@@ -1465,6 +1468,9 @@ static void init_tables(void)
 	signed int i,x,y,p;
 	signed int n;
 	double o,m;
+
+	if (ym_init_tab) return;
+	ym_init_tab = 1;
 
 	for (i=0; i < 256; i++)
 	{
@@ -1662,16 +1668,16 @@ static int OPNWriteReg(int r, int v)
 		SLOT->ssg ^= SLOT->ssgn;
 		if (v&0x08) ym2612.ssg_mask |=   1<<(OPN_SLOT(r) + c*4);
 		else        ym2612.ssg_mask &= ~(1<<(OPN_SLOT(r) + c*4));
-//		if (SLOT->state > EG_REL)
-//			recalc_volout(SLOT);
+		if (SLOT->state > EG_REL)
+			recalc_volout(SLOT);
 		break;
 
 	case 0xa0:
 		switch( OPN_SLOT(r) ){
 		case 0:		/* 0xa0-0xa2 : FNUM1 | depends on fn_h (below) */
 			{
-				UINT32 fn = (((UINT32)( (CH->fn_h)&7))<<8) + v;
-				UINT8 blk = CH->fn_h>>3;
+				UINT32 fn = ((UINT32)(ym2612.OPN.ST.fn_h & 7) << 8) | v;
+				UINT8 blk = ym2612.OPN.ST.fn_h >> 3;
 				/* keyscale code */
 				CH->kcode = (blk<<2) | opn_fktable[fn >> 7];
 				/* phase increment counter */
@@ -1684,7 +1690,7 @@ static int OPNWriteReg(int r, int v)
 			}
 			break;
 		case 1:		/* 0xa4-0xa6 : FNUM2,BLK */
-			CH->fn_h = v&0x3f;
+			ym2612.OPN.ST.fn_h = v & 0x3f;
 			ret = 0;
 			break;
 		case 2:		/* 0xa8-0xaa : 3CH FNUM1 */
@@ -1809,6 +1815,7 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 	if (ym2612.slot_mask & 0x00f000) active_chs |= chan_render(buffer, length, 3, flags|((pan&0x0c0)>>2)) << 3;
 	BIT_IF(flags, 1, (ym2612.ssg_mask & 0x0f0000) && (ym2612.OPN.ST.flags & 1));
 	if (ym2612.slot_mask & 0x0f0000) active_chs |= chan_render(buffer, length, 4, flags|((pan&0x300)>>4)) << 4;
+	g_lfo_ampm = crct.pack >> 16; // need_save; now because ch5 might skip updating it
 	BIT_IF(flags, 1, (ym2612.ssg_mask & 0xf00000) && (ym2612.OPN.ST.flags & 1));
 	if (ym2612.slot_mask & 0xf00000) active_chs |= chan_render(buffer, length, 5, flags|((pan&0xc00)>>6)|(!!ym2612.dacen<<2)) << 5;
 #undef	BIT_IF
@@ -1886,6 +1893,7 @@ int YM2612Write_(unsigned int a, unsigned int v)
 	switch( a & 3 ){
 	case 0:	/* address port 0 */
 	case 2:	/* address port 1 */
+		/* reminder: this is not used, see ym2612_write_local() */
 		ym2612.OPN.ST.address = v;
 		ym2612.addr_A1 = (a & 2) >> 1;
 		ret = 0;
@@ -2041,7 +2049,7 @@ typedef struct
 	UINT32  eg_timer;
 	UINT32  lfo_cnt;
 	UINT16  lfo_ampm;
-	UINT16  unused2;
+	INT16   busy_timer;
 	UINT32  keyon_field;	// 20
 	UINT32  kcode_fc_sl3_3;
 	UINT32  reserved[2];
@@ -2055,7 +2063,7 @@ typedef struct
 } ym_save_addon2;
 
 
-void YM2612PicoStateSave2(int tat, int tbt)
+void YM2612PicoStateSave2(int tat, int tbt, int busy)
 {
 	ym_save_addon_slot ss;
 	ym_save_addon2 sa2;
@@ -2113,10 +2121,11 @@ void YM2612PicoStateSave2(int tat, int tbt)
 	sa.eg_timer = ym2612.OPN.eg_timer;
 	sa.lfo_cnt  = ym2612.OPN.lfo_cnt;
 	sa.lfo_ampm = g_lfo_ampm;
+	sa.busy_timer = busy;
 	memcpy(ptr, &sa, sizeof(sa)); // 0x30 max
 }
 
-int YM2612PicoStateLoad2(int *tat, int *tbt)
+int YM2612PicoStateLoad2(int *tat, int *tbt, int *busy)
 {
 	ym_save_addon_slot ss;
 	ym_save_addon2 sa2;
@@ -2142,6 +2151,7 @@ int YM2612PicoStateLoad2(int *tat, int *tbt)
 	g_lfo_ampm = sa.lfo_ampm;
 	if (tat != NULL) *tat = sa.TAT;
 	if (tbt != NULL) *tbt = sa.TBT;
+	if (busy != NULL) *busy = sa.busy_timer;
 
 	// chans 1,2,3
 	ptr = &ym2612.REGS[0x0b8];

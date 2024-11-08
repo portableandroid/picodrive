@@ -1,5 +1,6 @@
 /*
  * (c) Copyright 2006-2010 notaz, All rights reserved.
+ * (c) Copyright 2019-2024 irixxxx
  *
  * For performance reasons 3 renderers are exported for both MD and 32x modes:
  * - 16bpp line renderer
@@ -45,6 +46,10 @@ static int osd_fps_x, osd_y, doing_bg_frame;
 const char *renderer_names[] = { "16bit accurate", " 8bit accurate", " 8bit fast", NULL };
 const char *renderer_names32x[] = { "accurate", "faster", "fastest", NULL };
 enum renderer_types { RT_16BIT, RT_8BIT_ACC, RT_8BIT_FAST, RT_COUNT };
+
+static int is_1stblanked;
+static int firstline, linecount;
+static int firstcol, colcount;
 
 static int (*emu_scan_begin)(unsigned int num) = NULL;
 static int (*emu_scan_end)(unsigned int num) = NULL;
@@ -190,29 +195,38 @@ static void draw_cd_leds(void)
 
 static void draw_pico_ptr(void)
 {
-	unsigned short *p = (unsigned short *)g_screen_ptr;
-	int x, y, pitch = 320;
+	int up = (PicoPicohw.pen_pos[0]|PicoPicohw.pen_pos[1]) & 0x8000;
+	int x, y, pitch = 320, offs;
+	// storyware pages are actually squished, 2:1
+	int h = (pico_inp_mode == 1 ? 160 : linecount);
+	if (h < 224) y++;
 
-	// only if pen enabled and for 16bit modes
-	if (pico_inp_mode == 0 || !is_16bit_mode())
-		return;
-
-	x = pico_pen_x + PICO_PEN_ADJUST_X;
-	y = pico_pen_y + PICO_PEN_ADJUST_Y;
-	if (!(Pico.video.reg[12]&1) && !(PicoIn.opt & POPT_DIS_32C_BORDER))
-		x += 32;
+	x = ((pico_pen_x * colcount  * ((1ULL<<32)/320 + 1)) >> 32) + firstcol;
+	y = ((pico_pen_y * h         * ((1ULL<<32)/224 + 1)) >> 32) + firstline;
 
 	if (currentConfig.EmuOpt & EOPT_WIZ_TEAR_FIX) {
 		pitch = 240;
-		p += (319 - x) * pitch + y;
+		offs = (319 - x) * pitch + y;
 	} else
-		p += x + y * pitch;
+		offs = x + y * pitch;
 
-	p[0]       ^= 0xffff;
-	p[pitch-1] ^= 0xffff;
-	p[pitch]   ^= 0xffff;
-	p[pitch+1] ^= 0xffff;
-	p[pitch*2] ^= 0xffff;
+	if (is_16bit_mode()) {
+		unsigned short *p = (unsigned short *)g_screen_ptr + offs;
+		int o = (up ? 0x0000 : 0xffff), _ = (up ? 0xffff : 0x0000);
+
+		p[-pitch-1] ^= o; p[-pitch] ^= _; p[-pitch+1] ^= _; p[-pitch+2] ^= o;
+		p[-1]       ^= _; p[0]      ^= o; p[1]        ^= o; p[2]        ^= _;
+		p[pitch-1]  ^= _; p[pitch]  ^= o; p[pitch+1]  ^= o; p[pitch+2]  ^= _;
+		p[2*pitch-1]^= o; p[2*pitch]^= _; p[2*pitch+1]^= _; p[2*pitch+2]^= o;
+	} else {
+		unsigned char *p = (unsigned char *)g_screen_ptr + offs;
+		int o = (up ? 0xe0 : 0xf0), _ = (up ? 0xf0 : 0xe0);
+
+		p[-pitch-1] = o; p[-pitch] = _; p[-pitch+1] = _; p[-pitch+2] = o;
+		p[-1]       = _; p[0]      = o; p[1]        = o; p[2]        = _;
+		p[pitch-1]  = _; p[pitch]  = o; p[pitch+1]  = o; p[pitch+2]  = _;
+		p[2*pitch-1]= o; p[2*pitch]= _; p[2*pitch+1]= _; p[2*pitch+2]= o;
+	}
 }
 
 static void clear_1st_column(int firstcol, int firstline, int linecount)
@@ -389,10 +403,6 @@ static int make_local_pal_sms(int fast_mode)
 	return (Pico.est.SonicPalCount+1)*0x40;
 }
 
-static int is_1stblanked;
-static int firstline, linecount;
-static int firstcol, colcount;
-
 void pemu_finalize_frame(const char *fps, const char *notice)
 {
 	int emu_opt = currentConfig.EmuOpt;
@@ -430,8 +440,15 @@ void pemu_finalize_frame(const char *fps, const char *notice)
 		osd_text(osd_fps_x, osd_y, fps);
 	if ((PicoIn.AHW & PAHW_MCD) && (emu_opt & EOPT_EN_CD_LEDS))
 		draw_cd_leds();
-	if (PicoIn.AHW & PAHW_PICO)
-		draw_pico_ptr();
+	if (PicoIn.AHW & PAHW_PICO) {
+		int h = linecount, w = colcount;
+		u16 *pd = g_screen_ptr + firstline*g_screen_ppitch + firstcol;
+
+		if (pico_inp_mode && is_16bit_mode())
+			emu_pico_overlay(pd, w, h, g_screen_ppitch);
+		if (pico_inp_mode /*== 2 || overlay*/)
+			draw_pico_ptr();
+	}
 }
 
 void plat_video_flip(void)
@@ -525,6 +542,10 @@ void plat_status_msg_busy_next(const char *msg)
 void plat_status_msg_busy_first(const char *msg)
 {
 	plat_status_msg_busy_next(msg);
+}
+
+void plat_status_msg_busy_done(void)
+{
 }
 
 static void vid_reset_mode(void)
@@ -752,10 +773,10 @@ void plat_update_volume(int has_changed, int is_up)
 
 	/* set the right mixer func */
 	if (vol >= 5)
-		PsndMix_32_to_16l = mix_32_to_16l_stereo;
+		PsndMix_32_to_16 = mix_32_to_16_stereo;
 	else {
-		mix_32_to_16l_level = 5 - vol;
-		PsndMix_32_to_16l = mix_32_to_16l_stereo_lvl;
+		mix_32_to_16_level = 5 - vol;
+		PsndMix_32_to_16 = mix_32_to_16_stereo_lvl;
 	}
 }
 
@@ -777,7 +798,7 @@ void pemu_sound_start(void)
 	}
 }
 
-static const int sound_rates[] = { 53000, 44100, 32000, 22050, 16000, 11025, 8000 };
+static const int sound_rates[] = { 52000, 44100, 32000, 22050, 16000, 11025, 8000 };
 
 void pemu_sound_stop(void)
 {

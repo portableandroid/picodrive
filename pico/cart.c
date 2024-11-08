@@ -2,6 +2,7 @@
  * PicoDrive
  * (c) Copyright Dave, 2004
  * (C) notaz, 2006-2010
+ * (C) irixxxx, 2020-2024
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -713,21 +714,22 @@ static unsigned char *PicoCartAlloc(int filesize, int is_sms)
 {
   unsigned char *rom;
 
+  // make size power of 2 for easier banking handling
+  int s = 0, tmp = filesize;
+  while ((tmp >>= 1) != 0)
+    s++;
+  if (filesize > (1 << s))
+    s++;
+  rom_alloc_size = 1 << s;
+
   if (is_sms) {
-    // make size power of 2 for easier banking handling
-    int s = 0, tmp = filesize;
-    while ((tmp >>= 1) != 0)
-      s++;
-    if (filesize > (1 << s))
-      s++;
-    rom_alloc_size = 1 << s;
     // be sure we can cover all address space
     if (rom_alloc_size < 0x10000)
       rom_alloc_size = 0x10000;
   }
   else {
     // align to 512K for memhandlers
-    rom_alloc_size = (filesize + 0x7ffff) & ~0x7ffff;
+    rom_alloc_size = (rom_alloc_size + 0x7ffff) & ~0x7ffff;
   }
 
   if (rom_alloc_size - filesize < 4)
@@ -795,12 +797,6 @@ int PicoCartLoad(pm_file *f, const unsigned char *rom, unsigned int romsize,
 
   if (!is_sms)
   {
-    // maybe we are loading MegaCD BIOS?
-    if (!(PicoIn.AHW & PAHW_MCD) && size == 0x20000 && (!strncmp((char *)rom_data+0x124, "BOOT", 4) ||
-         !strncmp((char *)rom_data+0x128, "BOOT", 4))) {
-      PicoIn.AHW |= PAHW_MCD;
-    }
-
     // Check for SMD:
     if (size >= 0x4200 && (size&0x3fff) == 0x200 &&
         ((rom_data[0x2280] == 'S' && rom_data[0x280] == 'E') || (rom_data[0x280] == 'S' && rom_data[0x2281] == 'E'))) {
@@ -857,7 +853,7 @@ int PicoCartInsert(unsigned char *rom, unsigned int romsize, const char *carthw_
   PicoLoadStateHook = NULL;
   carthw_chunks = NULL;
 
-  if (!(PicoIn.AHW & (PAHW_MCD|PAHW_SMS|PAHW_PICO)))
+  if (!(PicoIn.AHW & (PAHW_SMS|PAHW_PICO)))
     PicoCartDetect(carthw_cfg);
   if (PicoIn.AHW & PAHW_SMS)
     PicoCartDetectMS();
@@ -907,8 +903,7 @@ void PicoCartUnload(void)
     PicoCartUnloadHook = NULL;
   }
 
-  if (PicoIn.AHW & PAHW_32X)
-    PicoUnload32x();
+  PicoUnload32x();
 
   if (Pico.rom != NULL) {
     SekFinishIdleDet();
@@ -921,7 +916,7 @@ void PicoCartUnload(void)
 static unsigned int rom_crc32(int size)
 {
   unsigned int crc;
-  elprintf(EL_STATUS, "caclulating CRC32..");
+  elprintf(EL_STATUS, "calculating CRC32..");
   if (size <= 0 || size > Pico.romsize) size = Pico.romsize;
 
   // have to unbyteswap for calculation..
@@ -931,14 +926,18 @@ static unsigned int rom_crc32(int size)
   return crc;
 }
 
-static int rom_strcmp(int rom_offset, const char *s1)
+int rom_strcmp(void *rom, int size, int offset, const char *s1)
 {
   int i, len = strlen(s1);
-  const char *s_rom = (const char *)Pico.rom;
-  if (rom_offset + len > Pico.romsize)
-    return 0;
+  const char *s_rom = (const char *)rom;
+  if (offset + len > size)
+    return 1;
+
+  if (PicoIn.AHW & PAHW_SMS)
+    return strncmp(s_rom + offset, s1, strlen(s1));
+
   for (i = 0; i < len; i++)
-    if (s1[i] != s_rom[MEM_BE2(i + rom_offset)])
+    if (s1[i] != s_rom[MEM_BE2(i + offset)])
       return 1;
   return 0;
 }
@@ -1062,7 +1061,7 @@ static void parse_carthw(const char *carthw_cfg, int *fill_sram,
     {
       int offs;
       offs = strtoul(p, &r, 0);
-      if (offs < 0 || offs > Pico.romsize) {
+      if (offs < 0) {
         elprintf(EL_STATUS, "carthw:%d: check_str offs out of range: %d\n", line, offs);
 	goto bad;
       }
@@ -1078,7 +1077,7 @@ static void parse_carthw(const char *carthw_cfg, int *fill_sram,
         goto bad;
       *r = 0;
 
-      if (rom_strcmp(offs, p) == 0)
+      if (rom_strcmp(Pico.rom, Pico.romsize, offs, p) == 0)
         any_checks_passed = 1;
       else
         skip_sect = 1;
@@ -1137,8 +1136,12 @@ static void parse_carthw(const char *carthw_cfg, int *fill_sram,
         PicoIn.AHW = PAHW_SVP;
       else if (strcmp(p, "pico") == 0)
         PicoIn.AHW = PAHW_PICO;
+      else if (strcmp(p, "j_cart") == 0)
+        carthw_jcart_startup();
       else if (strcmp(p, "prot") == 0)
         carthw_sprot_startup();
+      else if (strcmp(p, "flash") == 0)
+        carthw_flash_startup();
       else if (strcmp(p, "ssf2_mapper") == 0)
         carthw_ssf2_startup();
       else if (strcmp(p, "x_in_1_mapper") == 0)
@@ -1210,6 +1213,8 @@ static void parse_carthw(const char *carthw_cfg, int *fill_sram,
         PicoIn.quirks |= PQUIRK_MARSCHECK_HACK;
       else if (strcmp(p, "force_6btn") == 0)
         PicoIn.quirks |= PQUIRK_FORCE_6BTN;
+      else if (strcmp(p, "no_z80_bus_lock") == 0)
+        PicoIn.quirks |= PQUIRK_NO_Z80_BUS_LOCK;
       else {
         elprintf(EL_STATUS, "carthw:%d: unsupported prop: %s", line, p);
         goto bad_nomsg;
@@ -1338,10 +1343,6 @@ static void PicoCartDetect(const char *carthw_cfg)
     elprintf(EL_STATUS, "SRAM fill");
     memset(Pico.sv.data, 0xff, Pico.sv.size);
   }
-
-  // Unusual region 'code'
-  if (rom_strcmp(0x1f0, "EUROPE") == 0 || rom_strcmp(0x1f0, "Europe") == 0)
-    *(u32 *) (Pico.rom + 0x1f0) = CPU_LE4(0x20204520);
 
   // tweak for Blackthorne: master SH2 overwrites stack of slave SH2 being in PWM
   // interrupt. On real hardware, nothing happens since slave fetches the values

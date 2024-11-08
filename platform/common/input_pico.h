@@ -27,8 +27,10 @@
 #define PEVB_FF         22
 #define PEVB_PICO_PNEXT 21
 #define PEVB_PICO_PPREV 20
-#define PEVB_PICO_SWINP 19
-#define PEVB_RESET      18
+#define PEVB_PICO_STORY 19
+#define PEVB_PICO_PAD   18
+#define PEVB_PICO_PENST 17
+#define PEVB_RESET      16
 
 #define PEV_VOL_DOWN    (1 << PEVB_VOL_DOWN)
 #define PEV_VOL_UP      (1 << PEVB_VOL_UP)
@@ -41,9 +43,11 @@
 #define PEV_FF          (1 << PEVB_FF)
 #define PEV_PICO_PNEXT  (1 << PEVB_PICO_PNEXT)
 #define PEV_PICO_PPREV  (1 << PEVB_PICO_PPREV)
-#define PEV_PICO_SWINP  (1 << PEVB_PICO_SWINP)
+#define PEV_PICO_STORY  (1 << PEVB_PICO_STORY)
+#define PEV_PICO_PAD    (1 << PEVB_PICO_PAD)
+#define PEV_PICO_PENST  (1 << PEVB_PICO_PENST)
 #define PEV_RESET       (1 << PEVB_RESET)
 
-#define PEV_MASK 0x7ffc0000
+#define PEV_MASK 0x7fff0000
 
 #endif /* INCLUDE_c48097f3ff2a6a9af1cce8fd7a9b3f0c */

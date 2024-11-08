@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=Picodrive
-Comment=A megadrive/genesis emulator
-Exec=PicoDrive %f
+Comment=A mega drive/genesis emulator
+Exec=picodrive %f
 Icon=megadrive
 Terminal=false
 Categories=emulators;

@@ -1,6 +1,7 @@
 /*
  * PicoDrive
  * (C) notaz, 2006-2010,2013
+ * (C) irixxxx, 2024
  *
  * This work is licensed under the terms of MAME license.
  * See COPYING file in the top-level directory.
@@ -138,16 +139,18 @@ static int detect_media(const char *fname, const unsigned char *rom, unsigned in
 
 extension_check:
   /* probably some headerless thing. Maybe check the extension after all. */
+  ext_ptr = pmf && *pmf->ext ? pmf->ext : ext;
+
   for (i = 0; i < ARRAY_SIZE(md_exts); i++)
-    if (strcasecmp(ext, md_exts[i]) == 0)
+    if (strcasecmp(ext_ptr, md_exts[i]) == 0)
       goto looks_like_md;
 
   for (i = 0; i < ARRAY_SIZE(sms_exts); i++)
-    if (strcasecmp(ext, sms_exts[i]) == 0)
+    if (strcasecmp(ext_ptr, sms_exts[i]) == 0)
       goto looks_like_sms;
 
   for (i = 0; i < ARRAY_SIZE(pico_exts); i++)
-    if (strcasecmp(ext, pico_exts[i]) == 0)
+    if (strcasecmp(ext_ptr, pico_exts[i]) == 0)
       goto looks_like_pico;
 
   /* If everything else fails, make a guess on the reset vector */
@@ -254,6 +257,7 @@ enum media_type_e PicoLoadMedia(const char *filename,
   const unsigned char *rom, unsigned int romsize,
   const char *carthw_cfg_fname,
   const char *(*get_bios_filename)(int *region, const char *cd_fname),
+  const char *(*get_msu_filename)(const char *cd_fname),
   void (*do_region_override)(const char *media_filename))
 {
   const char *rom_fname = filename;
@@ -281,15 +285,42 @@ enum media_type_e PicoLoadMedia(const char *filename,
     cd_img_type = PicoCdCheck(filename, &cd_region);
     if ((int)cd_img_type >= 0 && cd_img_type != CT_UNKNOWN)
     {
-      // valid CD image, ask frontend for BIOS..
+      // valid CD image, ask frontend for BIOS.
       rom_fname = NULL;
       if (get_bios_filename != NULL)
         rom_fname = get_bios_filename(&cd_region, filename);
-      if (rom_fname == NULL) {
+      rom_file = pm_open(rom_fname);
+
+      // ask frontend if there's an MSU/MD+ rom
+      rom_fname = NULL;
+      if (get_msu_filename != NULL)
+        rom_fname = get_msu_filename(filename);
+
+      // BIOS is required for CD games, but MSU/MD+ usually doesn't need it
+      if (rom_file == NULL && rom_fname == NULL) {
+        lprintf("opening BIOS failed\n");
         media_type = PM_BAD_CD_NO_BIOS;
         goto out;
       }
 
+      if (rom_file != NULL) {
+        ret = PicoCartLoad(rom_file, NULL, 0, &rom_data, &rom_size, 0);
+        if (ret != 0) {
+          lprintf("reading BIOS failed\n");
+          media_type = PM_ERROR;
+          goto out;
+        }
+
+        // copy BIOS and close file
+        PicoCreateMCD(rom_data, rom_size);
+
+        PicoCartUnload();
+        pm_close(rom_file);
+        rom_file = NULL;
+        rom_size = 0;
+      }
+
+      // if there is an MSU ROM, it's name is now in rom_fname for loading
       PicoIn.AHW |= PAHW_MCD;
     }
     else {
@@ -304,7 +335,7 @@ enum media_type_e PicoLoadMedia(const char *filename,
     PicoIn.AHW = PAHW_PICO;
   }
 
-  if (!rom) {
+  if (rom == NULL && rom_fname != NULL) {
     rom_file = pm_open(rom_fname);
     if (rom_file == NULL) {
       lprintf("Failed to open ROM\n");
@@ -313,33 +344,45 @@ enum media_type_e PicoLoadMedia(const char *filename,
     }
   }
 
-  ret = PicoCartLoad(rom_file, rom, romsize, &rom_data, &rom_size, (PicoIn.AHW & PAHW_SMS) ? 1 : 0);
-  if (ret != 0) {
-    if      (ret == 2) lprintf("Out of memory\n");
-    else if (ret == 3) lprintf("Read failed\n");
-    else               lprintf("PicoCartLoad() failed.\n");
-    media_type = PM_ERROR;
-    goto out;
-  }
+  if (rom != NULL || rom_file != NULL) {
+    ret = PicoCartLoad(rom_file, rom, romsize, &rom_data, &rom_size, (PicoIn.AHW & PAHW_SMS) ? 1 : 0);
+    if (ret != 0) {
+      if      (ret == 2) lprintf("Out of memory\n");
+      else if (ret == 3) lprintf("Read failed\n");
+      else               lprintf("PicoCartLoad() failed.\n");
+      media_type = PM_ERROR;
+      goto out;
+    }
 
-  // detect wrong files
-  if (strncmp((char *)rom_data, "Pico", 4) == 0) {
-    lprintf("savestate selected?\n");
-    media_type = PM_BAD_DETECT;
-    goto out;
-  }
-
-  if (!(PicoIn.AHW & PAHW_SMS)) {
-    unsigned short *d = (unsigned short *)(rom_data + 4);
-    if ((((d[0] << 16) | d[1]) & 0xffffff) >= (int)rom_size) {
-      lprintf("bad reset vector\n");
+    // detect wrong files
+    if (rom_strcmp(rom_data, rom_size, 0, "Pico") == 0) {
+      lprintf("savestate selected?\n");
       media_type = PM_BAD_DETECT;
       goto out;
     }
+
+    if (!(PicoIn.AHW & PAHW_SMS)) {
+      unsigned short *d = (unsigned short *)(rom_data + 4);
+      if ((((d[0] << 16) | d[1]) & 0xffffff) >= (int)rom_size) {
+        lprintf("bad reset vector\n");
+        media_type = PM_BAD_DETECT;
+        goto out;
+      }
+    }
+
+    // maybe we are loading MegaCD BIOS?
+    if (!(PicoIn.AHW & PAHW_MCD) && rom_size <= 0x20000 && (!rom_strcmp(rom_data, rom_size, 0x124, "BOOT") ||
+         !rom_strcmp(rom_data, rom_size, 0x128, "BOOT"))) {
+      PicoIn.AHW |= PAHW_MCD;
+      // copy to Pmcd as BIOS
+      PicoCreateMCD(rom_data, rom_size);
+      PicoCartUnload();
+      rom_size = 0;
+    }
   }
 
-  // load config for this ROM (do this before insert to get correct region)
   if (!(PicoIn.AHW & PAHW_MCD)) {
+    // load config for this ROM (do this before insert to get correct region)
     memcpy(media_id_header, rom_data + 0x100, sizeof(media_id_header));
     if (do_region_override != NULL)
       do_region_override(filename);
@@ -348,7 +391,7 @@ enum media_type_e PicoLoadMedia(const char *filename,
   // simple test for GG. Do this here since m.hardware is nulled in Insert
   if ((PicoIn.AHW & PAHW_SMS) && !PicoIn.hwSelect) {
     const char *ext = NULL;
-    if (rom_file && rom_file->ext && (*rom_file->ext != '\0')) {
+    if (rom_file && (*rom_file->ext != '\0')) {
       ext = rom_file->ext;
     }
     else if ((ext = strrchr(filename, '.'))) {
@@ -356,7 +399,7 @@ enum media_type_e PicoLoadMedia(const char *filename,
         ext = NULL;
       }
     }
-    if (ext && !strcasecmp(ext,"gg") && !PicoIn.hwSelect) {
+    if (ext && !strcasecmp(ext,"gg")) {
       PicoIn.AHW |= PAHW_GG;
       lprintf("detected GG ROM\n");
     } else if (ext && !strcasecmp(ext,"sg")) {
@@ -384,7 +427,7 @@ enum media_type_e PicoLoadMedia(const char *filename,
       media_type = PM_BAD_CD;
       goto out;
     }
-    if (Pico.romsize <= 0x20000)
+    if (Pico.romsize == 0)
       Pico.m.ncart_in = 1;
   }
 
