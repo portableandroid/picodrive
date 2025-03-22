@@ -482,10 +482,6 @@ void s68k_reg_write8(u32 a, u32 d)
       u32 d_old = Pico_mcd->s68k_regs[0x37];
       Pico_mcd->s68k_regs[0x37] = d & 7;
       if ((d ^ d_old) & 4) {
-        // ??
-	if (d & 4)
-          pcd_event_schedule_s68k(PCD_EVENT_CDC, 12500000/75);
-
         if ((d & 4) && (Pico_mcd->s68k_regs[0x33] & PCDS_IEN4)) {
           elprintf(EL_INTS, "cdd export irq 4");
           pcd_irq_s68k(4, 1);
@@ -678,7 +674,7 @@ static u32 PicoReadM68k8_ramc(u32 a)
 {
   u32 d = 0;
 
-  if (PicoIn.opt & POPT_EN_MCD_RAMCART) {
+  if (Pico.romsize == 0 && (PicoIn.opt & POPT_EN_MCD_RAMCART)) {
     if ((a & 0xf00001) == 0x400001) {
       if (Pico.sv.data != NULL)
         d = 3; // 64k cart
@@ -707,7 +703,7 @@ static u32 PicoReadM68k16_ramc(u32 a)
 
 static void PicoWriteM68k8_ramc(u32 a, u32 d)
 {
-  if (PicoIn.opt & POPT_EN_MCD_RAMCART) {
+  if (Pico.romsize == 0 && (PicoIn.opt & POPT_EN_MCD_RAMCART)) {
     if ((a & 0xf00001) == 0x600001) {
       if (Pico.sv.data != NULL && (Pico_mcd->m.bcram_reg & 1)) {
         Pico.sv.data[((a >> 1) & 0xffff) + 0x2000] = d;
@@ -1237,10 +1233,11 @@ PICO_INTERNAL void PicoMemSetupCD(void)
   cpu68k_map_set(m68k_read16_map,  BASE, BASE+0x01ffff, Pico_mcd->bios, 0);
   if (pcd_base_address != 0) { // cartridge (for MSU/MD+)
     // MD+ on MEGASD plus mirror
-    cpu68k_map_set(m68k_write8_map,  0x040000-(1<<M68K_MEM_SHIFT), 0x03ffff, msd_write8, 1);
-    cpu68k_map_set(m68k_write16_map, 0x040000-(1<<M68K_MEM_SHIFT), 0x03ffff, msd_write16, 1);
-    cpu68k_map_set(m68k_write8_map,  0x0c0000-(1<<M68K_MEM_SHIFT), 0x0bffff, msd_write8, 1);
-    cpu68k_map_set(m68k_write16_map, 0x0c0000-(1<<M68K_MEM_SHIFT), 0x0bffff, msd_write16, 1);
+    u32 base = 0x040000-(1<<M68K_MEM_SHIFT);
+    cpu68k_map_set(m68k_write8_map,  base, 0x03ffff, msd_write8, 1);
+    cpu68k_map_set(m68k_write16_map, base, 0x03ffff, msd_write16, 1);
+    cpu68k_map_set(m68k_write8_map,  base+0x080000, 0x0bffff, msd_write8, 1);
+    cpu68k_map_set(m68k_write16_map, base+0x080000, 0x0bffff, msd_write16, 1);
     msd_reset();
   } else { // no cartridge
     // RAM cart

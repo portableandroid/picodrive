@@ -13,6 +13,7 @@
 #include "ym2612.h"
 #include "sn76496.h"
 #include "emu2413/emu2413.h"
+#include "../cd/megasd.h"
 #include "resampler.h"
 #include "mix.h"
 
@@ -90,7 +91,7 @@ PICO_INTERNAL void PsndReset(void)
 }
 
 // FM polyphase FIR resampling
-#define FMFIR_TAPS	9
+#define FMFIR_TAPS	8
 
 // resample FM from its native 53267Hz/52781Hz with polyphase FIR filter
 static int ymchans;
@@ -127,7 +128,7 @@ static void YMFM_setup_FIR(int inrate, int outrate, int stereo)
 {
   int mindiff = 999;
   int diff, mul, div;
-  int minmult = 22, maxmult = 55; // min,max interpolation factor
+  int minmult = 11, maxmult = 61; // min,max interpolation factor
 
   // compute filter ratio with largest multiplier for smallest error
   for (mul = minmult; mul <= maxmult; mul++) {
@@ -137,7 +138,7 @@ static void YMFM_setup_FIR(int inrate, int outrate, int stereo)
       mindiff = diff;
       Pico.snd.fm_fir_mul = mul;
       Pico.snd.fm_fir_div = div;
-      if (abs(mindiff) <= inrate/1000+1) break; // below error limit
+      if (abs(mindiff)*1000 <= inrate) break; // below error limit
     }
   }
   printf("FM polyphase FIR ratio=%d/%d error=%.3f%%\n",
@@ -557,7 +558,7 @@ static int PsndRender(int offset, int length)
   // CD mode, cdda enabled, not data track, CDC is reading
   if ((PicoIn.AHW & PAHW_MCD) && (PicoIn.opt & POPT_EN_MCD_CDDA)
       && Pico_mcd->cdda_stream != NULL
-      && !(Pico_mcd->s68k_regs[0x36] & 1))
+      && (!(Pico_mcd->s68k_regs[0x36] & 1) || Pico_msd.state == 3))
   {
     if (Pico_mcd->cdda_type == CT_MP3)
       mp3_update(buf32, length-offset, stereo);

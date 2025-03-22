@@ -320,7 +320,7 @@ enum media_type_e PicoLoadMedia(const char *filename,
         rom_size = 0;
       }
 
-      // if there is an MSU ROM, it's name is now in rom_fname for loading
+      // if there is an MSU ROM, its name is now in rom_fname for loading
       PicoIn.AHW |= PAHW_MCD;
     }
     else {
@@ -412,12 +412,6 @@ enum media_type_e PicoLoadMedia(const char *filename,
       lprintf("detected SMS ROM\n");
   }
 
-  if (PicoCartInsert(rom_data, rom_size, carthw_cfg_fname)) {
-    media_type = PM_ERROR;
-    goto out;
-  }
-  rom_data = NULL; // now belongs to PicoCart
-
   // insert CD if it was detected
   Pico.m.ncart_in = 0;
   if (cd_img_type != CT_UNKNOWN) {
@@ -430,6 +424,12 @@ enum media_type_e PicoLoadMedia(const char *filename,
     if (Pico.romsize == 0)
       Pico.m.ncart_in = 1;
   }
+
+  if (PicoCartInsert(rom_data, rom_size, carthw_cfg_fname)) {
+    media_type = PM_ERROR;
+    goto out;
+  }
+  rom_data = NULL; // now belongs to PicoCart
 
   if (PicoIn.quirks & PQUIRK_FORCE_6BTN)
     PicoSetInputDevice(0, PICO_INPUT_PAD_6BTN);
