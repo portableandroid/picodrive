@@ -375,7 +375,7 @@ static void sound_deinit(void)
 #define is_16bit_mode() \
 	(currentConfig.renderer == RT_16BIT || (PicoIn.AHW & PAHW_32X) || is_bg_frame)
 
-static int vsync_handler(void)
+static int vsync_handler(int cause)
 {
 	iSignalSema(vsync_sema_id);
 	if (sound_stopped)
@@ -1070,6 +1070,20 @@ void plat_video_loop_prepare(void)
 {
 	apply_renderer();
 	vidResetMode();
+}
+
+void plat_show_cursor(int on)
+{
+}
+
+int plat_grab_cursor(int on)
+{
+	return 0;
+}
+
+int plat_has_wm(void)
+{
+	return 0;
 }
 
 /* prepare for entering the emulator loop */

@@ -95,25 +95,70 @@ scaled to fit the screen.
 
 There are 2 menu actions for switching to pages or pad which will automatically
 display the images if they are available. To allow for proper pen positioning
-there is also an action for having the pen on the page/touchpad or not. Pen
-positioning is done through the D-pad if the screen has been switched to either
-pages or pad.
+there is also a function for having the pen on the page/touchpad or not, the
+toggle for which is mapped to the START pad button. Pen positioning is done
+through the D-pad if the screen has been switched to either pages or pad, or by
+mouse if physical mouse support is activated.
 
 
-How to load SC-3000 tapes
--------------------------
+#ifdef GENERIC
+How to use the mouse
+--------------------
 
-The SC-3000 microcomputer has a connector for connecting a cassette tape drive
-to it. PicoDrive supports using tape recordings in WAV or bitstream format.
-Run one of the BASIC cartridges, then load the tape with the "Load tape" menu.
-Entering the LOAD command using the keyboard emulation automatically starts
-the emulated tape drive. You will get a confirmation after the tape has been
-loaded.
+If the host system has physical mouse support, PicoDrive can use real mouse
+input to emulate a Sega Mouse on a MegaDrive base, or to control the Pico Pen.
+To activate this functionality, select `mouse` as the input device for one of
+the pads. It depends on the game as to which pad should be used for mouse
+input.
+For Pico games, one input device should be set to `pad`, the other to `mouse`.
 
-The emulated tape drive has an automatic start/stop feature. Tapes requiring
-several load operations don't need any additional handling.
+A physical mouse can be operated in either a captured or uncaptured state,
+selectable via the `Capture mouse` hotkey. In captured mode, mouse movements
+for the whole screen are sent to PicoDrive; in uncaptured mode, only mouse
+movements inside the PicoDrive window are tracked.
+
+The physical mouse buttons are mapped as follows:
+
+| Physical Mouse | Sega Mouse |   Pico Pen  |
+|:--------------:|:----------:|:-----------:|
+|  Left Button   |      B     |  Pen Button |
+|  Middle Button |    START   |  Red Button |
+|  Right Button  |      C     | Pen Up/Down |
 
 
+How to use a light gun
+----------------------
+
+PicoDrive additionally supports light guns on systems where mouse support is
+available. It can be activated by selecting `light gun` or `justifier` as the
+input device. General mouse operation is covered in the "How to use the mouse"
+section.
+
+The `light gun` setting auto configures an input device based on the currently
+emulated platform: a Sega Menacer for the Mega Drive (and derivatives) and a
+Light Phaser for the Master System. The `justifier` setting corresponds to a
+Konami Justifier. This is only available on Mega Drive based systems, and can
+only be configured as input device 2.
+
+Selecting any light gun as input enables the light gun configuration submenu.
+This allows for displaying a cursor to indicate the current aiming position,
+as well as the adjustment of an aiming offset to correct for any in-game
+displacements.
+
+The physical mouse buttons are mapped as follows:
+
+| Physical Mouse | Sega Menacer/    |
+|                | Light Phaser/    |
+|                | Konami Justifier |
+|:--------------:|:----------------:|
+|  Left Button   |         A        |
+|  Middle Button |         B        |
+|  Right Button  |       START      |
+
+The pad button mappings may also be used to access other buttons.
+
+
+#endif
 How to use keyboard input
 -------------------------
 
@@ -137,6 +182,19 @@ All meta keys, like Shift, Ctrl, have a built-in toggle function. Pressing the
 A button on them will toggle their state between pressed and released. Depending
 on the state the color of the key changes slightly. Only one meta key can be
 active at the same time.
+
+
+How to load SC-3000 tapes
+-------------------------
+
+The SC-3000 microcomputer has a connector for attaching a cassette tape drive.
+PicoDrive supports tape recordings in WAV or bitstream format. Run one of the
+BASIC cartridges then load the tape image via the `Load tape` menu. Entering
+the `LOAD` command using the emulated keyboard automatically starts the virtual
+tape drive. Confirmation will usually be provided after the tape has been read.
+
+The virtual tape drive has an automatic start/stop feature. Tapes requiring
+several load operations are handled without the need for user intervention.
 
 
 Other important stuff
